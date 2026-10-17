@@ -1,0 +1,48 @@
+# Copy to config.yaml and edit.
+mode: paper            # paper = simulated fills on real MT5 prices; live = real orders
+timeframe: H1          # M1 M5 M15 M30 H1 H4 D1
+poll_seconds: 30
+paper_equity: 10000
+
+# Quiver ticker -> the symbol name your MT5 broker uses (check Market Watch).
+symbols:
+  - { ticker: AAPL, mt5: AAPL }
+  - { ticker: MSFT, mt5: MSFT }
+  - { ticker: NVDA, mt5: NVDA }
+
+# Optionally add the stocks with the strongest Quiver bias automatically.
+auto_universe:
+  enabled: false
+  top_n: 10
+  min_events: 3
+  mt5_prefix: ""       # e.g. "#"
+  mt5_suffix: ""       # e.g. ".US" or ".NAS"
+
+strategy:
+  swing_strength: 3
+  lookback: 60
+  atr_period: 14
+  stop_buffer_atr: 0.2
+  reward_risk: 2.0
+  min_reward_risk: 1.2
+  min_avg_volume: 0
+  min_atr_pct: 0.0005
+  max_atr_pct: 0.05
+  bias_mode: require   # require = only trade with Quiver bias; boost = block only opposing bias; ignore
+  bias_threshold: 0.2
+
+risk:
+  risk_per_trade_pct: 0.5
+  max_open_positions: 5
+  max_daily_loss_pct: 2.0
+  max_spread_points: 50
+
+quiver:
+  lookback_days: 30
+  congress_weight: 1.0
+  insider_weight: 1.0
+  refresh_minutes: 60
+
+mt5:
+  magic: 770011        # tags this bot's orders; it never touches other positions
+  deviation: 20
