@@ -182,10 +182,12 @@ def run_validation_report(session: Session, *, symbol: str, timeframe: str, star
         _, val_end = split_points(window["time"], policy)
         rep.oos_key = "|".join([strategy_name, symbol, tf.value, val_end.isoformat(),
                                 window["time"].iloc[-1].isoformat()])
-        prior = session.scalars(select(ValidationReport.id).where(
+        prior = session.scalars(select(ValidationReport.report).where(
             ValidationReport.oos_key == rep.oos_key, ValidationReport.id != rep.id,
             ValidationReport.status == "completed")).all()
-        rep.oos_prior_uses = len(prior)
+        # a run with no out-of-sample trades revealed nothing about that window
+        rep.oos_prior_uses = sum(1 for r in prior
+                                 if ((r or {}).get("segments", {}).get("out_of_sample") or {}).get("closed_trades", 1))
         rep.data_fingerprint = {"primary": fingerprint(primary),
                                 "htf": fingerprint(htf_df) if htf_df is not None else None}
         news, news_weeks = news_for(session, config, start, end)

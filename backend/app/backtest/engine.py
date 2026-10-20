@@ -25,6 +25,7 @@ EXECUTION MODEL (bar-based simulation, NOT tick-accurate):
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -141,6 +142,17 @@ def size_position(spec: dict, entry: float, stop: float, equity: float, risk_pct
     return min(vol, spec["volume_max"])
 
 
+def min_volume_note(risks: list[tuple[float, float]], volume_min: float, risk_pct: float) -> str:
+    """Explain signals skipped because the broker's smallest lot risks more than allowed."""
+    need = statistics.median(r for r, _ in risks)
+    budget = statistics.median(b for _, b in risks)
+    return (f"{len(risks)} signal(s) skipped: the smallest allowed size ({volume_min:g} lots) would lose "
+            f"a median of {need:,.2f} at the stop, but the risk budget was {budget:,.2f} "
+            f"({risk_pct:g}% of equity). To take these trades you would need about "
+            f"{need / budget:.1f}x the balance, or a different market/timeframe with tighter stops. "
+            f"The budget is never widened automatically.")
+
+
 def _spec_values(spec: dict) -> dict:
     need = ("point", "tick_size", "tick_value", "volume_min", "volume_max", "volume_step")
     missing = [k for k in need if not spec.get(k) or spec[k] <= 0]
@@ -204,6 +216,7 @@ class BacktestEngine:
         balance = cfg.starting_balance
         trades: list[Trade] = []
         rejections: list[Rejection] = []
+        min_lot_risks: list[tuple[float, float]] = []  # (risk at minimum volume, budget) per skipped signal
         equity_rows = []
         pos: Trade | None = None
         pending: SignalIntent | None = None
@@ -292,6 +305,10 @@ class BacktestEngine:
                     vol = self._size(entry, sig.stop_loss, equity_now * pending_scale)
                     if vol <= 0:
                         rejections.append(Rejection(row.time, "minimum volume exceeds risk budget", sig.side))
+                        per_lot = (self._money(abs(entry - sig.stop_loss), 1.0)
+                                   + 2 * cfg.costs.commission_per_lot_per_side)
+                        min_lot_risks.append((per_lot * self.spec["volume_min"],
+                                              equity_now * pending_scale * cfg.risk.risk_per_trade_pct / 100))
                     elif self._margin(entry, vol) > equity_now:
                         rejections.append(Rejection(row.time, "insufficient margin", sig.side))
                     else:
@@ -408,5 +425,7 @@ class BacktestEngine:
 
         if news is not None and news_unknown:
             notes.append(f"news blackout not applied to {news_unknown} signal(s): no calendar data stored for their week")
+        if min_lot_risks:
+            notes.append(min_volume_note(min_lot_risks, self.spec["volume_min"], cfg.risk.risk_per_trade_pct))
         eq = pd.DataFrame(equity_rows, columns=["time", "equity", "balance"])
         return BacktestResult(trades, eq, rejections, n - i0, notes)

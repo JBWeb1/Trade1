@@ -29,6 +29,12 @@ if ([double]$balance -lt 200) {
     Write-Host "already risks more than allowed. The report will show this under 'Rejected signals'." -ForegroundColor Yellow
 }
 $commission = Read-Host "Commission per lot per side in account currency (0 for Exness Standard) [0]"; if (-not $commission) { $commission = "0" }
+$risk = Read-Host "Risk per trade, % of balance (0.25 = cautious, 1 = the usual maximum) [0.25]"; if (-not $risk) { $risk = "0.25" }
+if ([double]$risk -gt 2) {
+    Write-Host "Risk above 2% per trade is not allowed here. Using 2." -ForegroundColor Yellow
+    $risk = "2"
+}
+Write-Host "`nSettings: symbol $symbol, timeframe $tf, balance $balance, risk $risk% per trade, commission $commission per lot per side"
 
 $end = (Get-Date).ToUniversalTime().AddDays(1).ToString("yyyy-MM-dd")  # tomorrow: include today's bars (capped at now)
 switch ($tf) {
@@ -59,10 +65,10 @@ try {
     foreach ($strategy in @("trend_continuation", "range_breakout", "liquidity_sweep")) {
         Write-Host "`n===== Backtest: $strategy =====" -ForegroundColor Cyan
         Invoke-Trade1 backtest --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
-            --strategy $strategy --balance $balance --commission $commission --risk 0.25
+            --strategy $strategy --balance $balance --commission $commission --risk $risk
         Write-Host "`n===== Validation: $strategy (takes up to a few minutes) =====" -ForegroundColor Cyan
         Invoke-Trade1 validate --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
-            --strategy $strategy --balance $balance --commission $commission --risk 0.25
+            --strategy $strategy --balance $balance --commission $commission --risk $risk
     }
 } finally {
     Pop-Location

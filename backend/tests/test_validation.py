@@ -89,3 +89,18 @@ def test_verdict_precedence():
     assert decide([c("protocol", False), c("performance", True)]) == "INCONCLUSIVE"
     assert decide([c("sample", False), c("performance", False)]) == "FAILED"
     assert decide([c("sample", True), c("robustness", False)]) == "FAILED"
+
+
+def test_no_trades_is_inconclusive_not_failed(seeded):  # noqa: F811
+    """A strategy that never trades (e.g. minimum lot too big for the balance) has not been
+    shown to lose: the verdict must say there is nothing to judge."""
+    rep = run_validation_report(seeded, symbol="EURUSDm", timeframe="H1", htf="H4", start=START, end=END,
+                                strategy_name="trend_continuation", policy=ValidationPolicy(**FAST),
+                                config=BacktestConfig(starting_balance=1.0))
+    assert rep.status == "completed", rep.error
+    assert rep.verdict == "INCONCLUSIVE"
+    assert rep.reasons[0].startswith("no trades in any segment")
+    # ...and it did not use up the out-of-sample window
+    again = run_validation_report(seeded, symbol="EURUSDm", timeframe="H1", htf="H4", start=START, end=END,
+                                  strategy_name="trend_continuation", policy=ValidationPolicy(**FAST))
+    assert again.oos_prior_uses == 0

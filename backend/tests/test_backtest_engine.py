@@ -119,6 +119,9 @@ def test_commission_and_min_volume_rejection():
     tiny = dict(SPEC, volume_min=10.0, volume_step=1.0)
     res, m = run([FLAT, FLAT, FLAT], {0: ("buy", 1.0980, 1.1030)}, spec=tiny)
     assert res.trades == [] and m["rejections"] == {"minimum volume exceeds risk budget": 1}
+    # the report explains the gap: 10 lots x $20 at the stop vs a $25 budget (0.25% of 10,000)
+    note = next(n for n in res.notes if "smallest allowed size" in n)
+    assert "200.00" in note and "25.00" in note and "8.0x" in note
 
 
 def test_gap_invalidating_signal_and_degraded_rr_are_rejected():

@@ -255,10 +255,15 @@ def run_validation(inp: Inputs, start: datetime, end: datetime, policy: Validati
 
     failed = [c for c in checks if not c["passed"]]
     verdict = decide(checks)
+    reasons = [f"{c['check']}: {c['detail']}" for c in failed]
+    if total == 0:
+        # nothing was traded, so performance and robustness cannot be judged either way
+        verdict = "INCONCLUSIVE"
+        reasons.insert(0, "no trades in any segment - nothing to judge; see the backtest's rejected signals")
 
     return {
         "verdict": verdict,
-        "reasons": [f"{c['check']}: {c['detail']}" for c in failed],
+        "reasons": reasons,
         "checks": checks,
         "splits": {"start": pd.Timestamp(start).isoformat(), "development_end": dev_end.isoformat(),
                    "validation_end": val_end.isoformat(), "end": pd.Timestamp(end).isoformat()},
