@@ -1,0 +1,128 @@
+"""Database models for Phase B (foundation + historical data).
+
+Later phases add strategy, backtest, signal, risk and demo-execution tables in
+their own migrations.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
+                        String, Text, UniqueConstraint)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+JsonType = JSON().with_variant(JSONB(), "postgresql")
+# SQLite only auto-increments INTEGER PRIMARY KEY
+BigId = BigInteger().with_variant(Integer(), "sqlite")
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[dict] = mapped_column(JsonType)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+
+class Instrument(Base):
+    __tablename__ = "instruments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    broker_server: Mapped[str] = mapped_column(String(100))
+    symbol: Mapped[str] = mapped_column(String(64))
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    subcategory: Mapped[str | None] = mapped_column(String(32))
+    description: Mapped[str | None] = mapped_column(String(255))
+    spec: Mapped[dict] = mapped_column(JsonType)
+    issues: Mapped[list] = mapped_column(JsonType, default=list)
+    metadata_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+    __table_args__ = (UniqueConstraint("broker_server", "symbol", name="uq_instrument_server_symbol"),)
+
+
+class IngestionRun(Base):
+    __tablename__ = "ingestion_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(64))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    requested_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    requested_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|warning|failed
+    source: Mapped[dict] = mapped_column(JsonType, default=dict)
+    bars_received: Mapped[int] = mapped_column(Integer, default=0)
+    bars_valid: Mapped[int] = mapped_column(Integer, default=0)
+    bars_inserted: Mapped[int] = mapped_column(Integer, default=0)
+    bars_already_present: Mapped[int] = mapped_column(Integer, default=0)
+    first_bar: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_bar: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quality: Mapped[dict] = mapped_column(JsonType, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (Index("ix_ingestion_symbol_tf", "symbol", "timeframe", "started_at"),)
+
+
+class Bar(Base):
+    """Bid-based OHLC bars as delivered by MT5, open time in UTC."""
+
+    __tablename__ = "bars"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(64))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    open: Mapped[float] = mapped_column(Float)
+    high: Mapped[float] = mapped_column(Float)
+    low: Mapped[float] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)
+    tick_volume: Mapped[int] = mapped_column(BigInteger, default=0)
+    real_volume: Mapped[int] = mapped_column(BigInteger, default=0)
+    spread_points: Mapped[int] = mapped_column(Integer, default=0)
+    ingestion_run_id: Mapped[int | None] = mapped_column(ForeignKey("ingestion_runs.id"))
+    __table_args__ = (UniqueConstraint("symbol", "timeframe", "time", name="uq_bar_symbol_tf_time"),)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    actor: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    details: Mapped[dict] = mapped_column(JsonType, default=dict)
+
+
+class HealthEvent(Base):
+    __tablename__ = "health_events"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    component: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16))
+    details: Mapped[dict] = mapped_column(JsonType, default=dict)
+
+
+class EconomicEventRow(Base):
+    """Scheduled economic-calendar events from an optional news provider."""
+
+    __tablename__ = "economic_events"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    currency: Mapped[str] = mapped_column(String(8), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    impact: Mapped[str] = mapped_column(String(16))
+    forecast: Mapped[str | None] = mapped_column(String(32))
+    previous: Mapped[str | None] = mapped_column(String(32))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("provider", "event_time", "currency", "title",
+                                       name="uq_event_provider_time_ccy_title"),)
+

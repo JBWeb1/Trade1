@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
 .venv/
+venv/
 .env
-config.yaml
+*.env
+!.env.example
 *.log
 .pytest_cache/
+node_modules/
+.next/

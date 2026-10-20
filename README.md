@@ -1,79 +1,153 @@
-# Trade1 — Liquidity-Sweep Bot with Quiver Quant + MetaTrader 5
+# Trade1 Trading AI
 
-An automated trading system that:
+A research-first algorithmic trading platform for an **Exness MetaTrader 5 demo account**:
+historical data → backtesting → out-of-sample validation → (later) demo-only automation.
 
-1. **Pulls alternative data from [Quiver Quant](https://www.quiverquant.com/)**: US Congress
-   trades and corporate insider trades. It turns them into a bias score from −1 to +1 for each ticker.
-2. **Finds liquidity sweeps** in price: price wicks through a recent swing high or low (where
-   stop orders sit), then closes back inside the range. That is a common reversal setup.
-3. **Takes the trade only when the sweep agrees with the Quiver bias**. For example, a bullish sweep
-   on a stock that politicians and insiders have been buying.
-4. **Sizes the position from your risk %** and sends the order, with stop loss and take
-   profit, **to MetaTrader 5**.
+> **Status: Phase B (foundation + historical data pipeline) is done.** There is no backtest
+> engine, strategy, UI or order execution yet. **Live trading does not exist in this release**,
+> and no code path can send a broker order. See [docs/PLAN.md](docs/PLAN.md) for the phase plan.
 
-```
-Quiver Quant API ──► bias per ticker ─┐
-                                      ├─► signal ─► risk manager ─► MT5 order (SL/TP)
-MT5 price bars ───► liquidity sweep ──┘
-```
+## What works now
+
+| Area | Status |
+|---|---|
+| MT5 connection (read-only gateway, serialised calls, UTC conversion) | ✅ |
+| Demo-account verification from the terminal's own `trade_mode` (fails closed) | ✅ |
+| Market discovery: every symbol your account exposes, categorised, with full contract specs and metadata-validation flags | ✅ |
+| Historical bars for M1 / M15 / H1 / H4: chunked download, quality checks, idempotent storage, per-run audit record | ✅ |
+| Diagnostics: connection, demo verification, server-clock offset, flagged symbols, problem downloads | ✅ |
+| Optional Forex Factory calendar: import, validation, news-blackout check | ✅ (format to be confirmed on your machine) |
+| PostgreSQL schema with Alembic migrations | ✅ |
+| Backtesting, strategies, validation, risk engine, UI, demo execution | ⏳ later phases |
 
 ## Requirements
 
-* **Windows** (or a Windows VPS). The official `MetaTrader5` Python package works only there.
-* The MetaTrader 5 terminal, installed and logged in to your broker, with **Algo Trading** turned on.
-  Your broker must offer the US stocks or stock CFDs you want to trade.
-* Python 3.10+
-* A Quiver Quant API token (from your account page; the API needs a paid tier).
+* Windows 10/11 with the **MetaTrader 5 terminal from Exness**, logged in to your demo account.
+* Python 3.12 or 3.13, 64-bit. The `MetaTrader5` package must install on your Python version.
+  If `pip install MetaTrader5` fails, use Python 3.12.
+* PostgreSQL 16 (or 15+).
 
-## Setup
+## Setup (Windows, PowerShell)
 
-```bash
-pip install -r requirements.txt
-copy config.example.yaml config.yaml
-copy .env.example .env          # then put your QUIVER_API_TOKEN in .env
+```powershell
+cd backend
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+copy .env.example .env          # edit: database URL, API token
+# create the database once (psql or pgAdmin):  CREATE DATABASE trade1;
+alembic upgrade head
+pytest                          # must pass before you continue
 ```
 
-In `config.yaml`, map each Quiver ticker to the name your broker uses in MT5's Market
-Watch. Brokers name stocks differently: `AAPL`, `AAPL.US`, `#AAPL`, `AAPL.NAS`, ...
+`requirements.txt` pins the versions tested here. If installing `MetaTrader5` changes your
+numpy version, run `pytest` again and report any failures.
 
-## Usage
+## Step 1 — Confirm the terminal is on the Exness demo account
 
-```bash
-python -m trade1 bias    # print the Quiver Quant bias table
-python -m trade1 scan    # one pass over all symbols on real MT5 prices, paper fills only
-python -m trade1 run     # run continuously; mode in config.yaml decides paper vs live
+1. In MT5, open **File → Login to Trade Account**. The server name should contain **Trial**
+   (Exness demo servers look like `Exness-MT5Trial…`; real ones look like `Exness-MT5Real…`).
+2. The bottom-right corner of the terminal must show a ping (e.g. `35 ms`), not "No connection".
+3. Run:
+
+```powershell
+python -m app.cli mt5-check
 ```
 
-`mode: paper` (the default) reads real prices from MT5 but simulates every fill.
-Switch to `mode: live` only after you've watched it on a **demo account**.
+This reads `account_info().trade_mode` from the terminal itself. It prints
+`RESULT: VERIFIED DEMO ACCOUNT` only if the terminal reports **DEMO**, is connected, the server
+name does not indicate a real-money server, and (if you set `TRADE1_MT5_LOGIN`) the login matches.
+Anything else prints `NOT VERIFIED AS DEMO` with the reasons.
 
-## Key settings
+It also estimates the broker's server-clock offset from live ticks. Exness servers are expected
+to run on UTC+0. If the estimate differs, set `TRADE1_MT5_SERVER_UTC_OFFSET_HOURS`. The estimate
+only works while some market is open.
 
-| Setting | Meaning |
-|---|---|
-| `strategy.bias_mode` | `require`: trade only in the Quiver direction. `boost`: block only trades against it. `ignore`: price action only. |
-| `strategy.reward_risk` | Take-profit as a multiple of the risk; capped at the opposite liquidity pool. |
-| `risk.risk_per_trade_pct` | % of equity lost if the stop is hit. |
-| `risk.max_daily_loss_pct` | Stops opening new trades for the day after this drawdown. |
-| `auto_universe.enabled` | Adds the tickers with the strongest Quiver bias, if your broker lists them. |
-| `mt5.magic` | Tags the bot's orders. The bot never touches your manual trades. |
+## Step 2 — Discover markets and download history
+
+```powershell
+python -m app.cli discover          # stores every symbol your account offers
+python -m app.cli ingest --symbol EURUSDm --timeframe H1 --start 2024-01-01 --end 2025-01-01
+python -m app.cli coverage          # what is stored, per symbol and timeframe
+```
+
+Use the exact symbol names `discover` reports (Exness adds suffixes such as `m`).
+Every download stores an *ingestion run* recording bars received, usable, newly inserted and
+already present, plus duplicates, invalid OHLC, misaligned timestamps, gaps (weekend / session
+break / unexpected), late history start and stale data. Re-running a download never creates
+duplicate bars. Empty responses are recorded as failures; no bars are ever invented.
+
+## Step 3 — Run the API
+
+```powershell
+uvicorn app.api.main:app --host 127.0.0.1 --port 8000
+```
+
+Every route except `/api/health` requires `Authorization: Bearer <TRADE1_API_TOKEN>`.
+If no token is configured, protected routes return 503 (fail closed).
+Interactive docs: http://127.0.0.1:8000/docs
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/api/health` | Liveness, DB status, execution mode |
+| GET | `/api/mt5/status` | Connection + demo verification |
+| GET | `/api/mt5/account` | Account summary (no personal name) + verification |
+| POST | `/api/markets/sync` | Re-discover symbols |
+| GET | `/api/markets?category=&search=&metadata_ok=` | Filter instruments |
+| GET | `/api/markets/{symbol}` | Full contract spec and validation issues |
+| POST | `/api/market-data/ingest` | Download history (UTC timestamps required) |
+| GET | `/api/market-data?symbol=&timeframe=&start=&end=` | Stored bars |
+| GET | `/api/market-data/runs`, `/api/market-data/coverage` | Download audit and coverage |
+| GET | `/api/diagnostics` | Plain explanations of problems |
+| POST | `/api/news/refresh` | Fetch the calendar feed (rate-limited) |
+| GET | `/api/news/events?start=&end=&currency=&impact=` | Stored events + coverage |
+| GET | `/api/news/blackout?symbol=&at=` | Would a new entry be blocked by news? |
+
+## Optional: Forex Factory economic calendar
+
+Trade1 can read the calendar **export** that Forex Factory publishes for the current week. It does
+not scrape the calendar web page. It is used as a **news blackout**: no new entries from 30 minutes
+before to 30 minutes after a high-impact event in a currency the symbol is exposed to.
+For example, EURUSD is exposed to EUR and USD events, XAUUSD to USD, and a USD-quoted index to USD.
+By default the blackout applies to forex, metals, energy and indices, but not crypto.
+
+1. On https://www.forexfactory.com/calendar, find the calendar export and copy the **JSON** link
+   for "this week".
+2. Put it in `.env` as `TRADE1_NEWS_FEED_URL=...`.
+3. Run `python -m app.cli news-check`. It fetches and validates the feed without saving and
+   prints `FEED FORMAT MATCHES`, or the exact fields or records it rejected.
+4. Collect regularly with `python -m app.cli news-fetch`. Refreshes are limited to once per 60 minutes.
+   You can also import a saved file: `python -m app.cli news-import --file calendar.json`.
+
+**Limitations:**
+* The export only covers the current week, so news history starts on the day you begin
+  collecting. For older periods, backtests will report the news filter as **unavailable**,
+  never as "no news" (see `coverage` in `/api/news/events`).
+* Only the schedule is stored. Released "actual" values are not used, which avoids look-ahead bias.
+* The feed format could not be checked from the development sandbox (no network access to
+  Forex Factory). The adapter validates every record strictly and rejects anything that does
+  not match, so a format change shows up as an error, not as wrong data.
+* Review Forex Factory's terms of use for your use case.
 
 ## Tests
 
-```bash
-pip install -r requirements-dev.txt
-pytest
+```powershell
+pytest                                   # unit tests, mocked MT5, SQLite; never touches a broker
+$env:TRADE1_TEST_PG_URL="postgresql+psycopg://trade1:PASS@localhost:5432/trade1_test"
+pytest tests/test_postgres.py            # runs migrations + ingestion on a throwaway PostgreSQL DB
 ```
 
-## Project layout
+The safety tests include: only a terminal-reported DEMO account verifies; REAL, CONTEST,
+unknown modes, real-money server names, disconnected terminals and login mismatches are all
+rejected; no API route handles orders; and no application module references `order_send`.
 
-```
-trade1/quiver.py    Quiver Quant client + bias scoring
-trade1/strategy.py  liquidity-sweep detection + liquidity/volatility filters
-trade1/risk.py      position sizing, daily loss limit, spread filter
-trade1/broker.py    MT5Broker (live) and PaperBroker (simulated)
-trade1/engine.py    main loop
-```
+## Troubleshooting
 
-> **Disclaimer:** This is software, not financial advice. Automated trading can lose money
-> quickly. Test on a demo account first.
+| Symptom | Fix |
+|---|---|
+| `MetaTrader5 Python package is not installed` | You're not on Windows, or `pip install MetaTrader5` failed. Use 64-bit Python 3.12. |
+| `MT5 initialize failed … IPC` | Start the MT5 terminal first. Set `TRADE1_MT5_PATH` if you have several terminals. |
+| `account_info failed` | The terminal isn't logged in. Use File → Login to Trade Account. |
+| Ingestion `failed`, "no bars" | The symbol has no history for that range, or the terminal's **Tools → Options → Charts → Max bars in chart** limit is too low. |
+| "history starts after the requested start" | The broker serves less history than you asked for. The run records exactly what was received. |
+| Timestamps look shifted | Run `mt5-check` while markets are open and set `TRADE1_MT5_SERVER_UTC_OFFSET_HOURS`. |
