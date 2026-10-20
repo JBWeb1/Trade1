@@ -9,6 +9,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,7 +25,9 @@ def backup_database(database_url: str, dest_dir: Path, keep: int = 14) -> Path:
         if not src.exists():
             raise FileNotFoundError(f"SQLite database not found: {src}")
         out = dest_dir / f"trade1_{stamp}.db"
-        with sqlite3.connect(src) as s, sqlite3.connect(out) as d:
+        # close explicitly: sqlite3's context manager only commits, and Windows will not
+        # delete or replace a file that still has an open handle
+        with closing(sqlite3.connect(src)) as s, closing(sqlite3.connect(out)) as d:
             s.backup(d)
         pattern = "trade1_*.db"
     elif url.get_backend_name() == "postgresql":

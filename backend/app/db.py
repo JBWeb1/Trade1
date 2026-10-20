@@ -13,6 +13,10 @@ _factory: sessionmaker[Session] | None = None
 
 def init_engine(url: str, **kwargs) -> Engine:
     global _engine, _factory
+    if url.startswith("sqlite"):
+        # Windows SQLite builds may allow only 999 variables per statement; keep ORM bulk
+        # inserts (e.g. backtest trades, ~25 columns) under that.
+        kwargs.setdefault("insertmanyvalues_page_size", 30)
     _engine = create_engine(url, pool_pre_ping=True, future=True, **kwargs)
     _factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine

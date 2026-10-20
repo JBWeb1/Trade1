@@ -227,7 +227,7 @@ def cmd_portfolio(_gw, args) -> int:
     from .backtest.engine import BacktestConfig, RiskModel
     from .backtest.portfolio import PortfolioLimits
     from .backtest.studies import run_portfolio
-    legs = json.loads(Path(args.legs).read_text())
+    legs = json.loads(Path(args.legs).read_text(encoding="utf-8-sig"))
     cfg = BacktestConfig(starting_balance=args.balance, risk=RiskModel(risk_per_trade_pct=args.risk))
     limits = PortfolioLimits(starting_balance=args.balance, risk_per_trade_pct=args.risk,
                              max_open_positions=args.max_positions, max_currency_exposure=args.max_currency_exposure)

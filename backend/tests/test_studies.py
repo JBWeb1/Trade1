@@ -223,10 +223,12 @@ def test_sqlite_backup_with_rotation(tmp_path):
     import sqlite3
 
     from app.backup import backup_database
+    from contextlib import closing
     db = tmp_path / "t.db"
-    with sqlite3.connect(db) as c:
+    with closing(sqlite3.connect(db)) as c:
         c.execute("create table x (v int)")
         c.execute("insert into x values (42)")
+        c.commit()
     outs = []
     for k in range(4):
         import time
@@ -234,7 +236,7 @@ def test_sqlite_backup_with_rotation(tmp_path):
         time.sleep(1.05)  # distinct timestamps
     kept = sorted((tmp_path / "backups").glob("trade1_*.db"))
     assert len(kept) == 2 and kept[-1] == outs[-1]
-    with sqlite3.connect(kept[-1]) as c:
+    with closing(sqlite3.connect(kept[-1])) as c:
         assert c.execute("select v from x").fetchone() == (42,)
     with pytest.raises(FileNotFoundError):
         backup_database(f"sqlite:///{tmp_path}/missing.db", tmp_path / "b")

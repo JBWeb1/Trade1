@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from app import db as dbmod
 from app.config import Settings
@@ -8,6 +12,15 @@ from app.models import Base
 from app.mt5.gateway import MT5Gateway
 
 from .fake_mt5 import FakeMT5
+
+
+@event.listens_for(Engine, "connect")
+def _emulate_windows_sqlite_limits(dbapi_conn, _record):
+    """Python on Windows ships SQLite builds with as few as 999 variables per statement
+    (Linux builds often allow 250,000). Test with the strict limit so bulk inserts that
+    only work on Linux fail here too."""
+    if isinstance(dbapi_conn, sqlite3.Connection):
+        dbapi_conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
 
 
 @pytest.fixture

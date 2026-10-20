@@ -29,6 +29,10 @@ def _chunks(start: datetime, end: datetime, tf_minutes: int):
         cur = nxt + timedelta(seconds=1)
 
 
+# SQLite builds on Windows may allow only 999 bound variables per statement.
+SQLITE_MAX_VARIABLES = 999
+
+
 def _insert_ignore(session: Session, rows: list[dict]) -> int:
     """INSERT ... ON CONFLICT DO NOTHING. Returns the number of new rows."""
     if not rows:
@@ -37,9 +41,10 @@ def _insert_ignore(session: Session, rows: list[dict]) -> int:
     ins = {"postgresql": postgresql.insert, "sqlite": sqlite.insert}.get(dialect)
     if ins is None:
         raise RuntimeError(f"unsupported database dialect {dialect}")
+    batch = INSERT_BATCH if dialect != "sqlite" else max(1, SQLITE_MAX_VARIABLES // len(rows[0]))
     inserted = 0
-    for i in range(0, len(rows), INSERT_BATCH):
-        stmt = ins(Bar).values(rows[i:i + INSERT_BATCH]).on_conflict_do_nothing(
+    for i in range(0, len(rows), batch):
+        stmt = ins(Bar).values(rows[i:i + batch]).on_conflict_do_nothing(
             index_elements=["symbol", "timeframe", "time"]).returning(Bar.id)
         # count RETURNING rows: driver rowcount is -1 for batched inserts on psycopg
         inserted += len(session.execute(stmt).all())
