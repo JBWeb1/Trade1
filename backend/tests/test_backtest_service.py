@@ -102,6 +102,14 @@ def test_backtest_api(seeded, settings, fake):
         assert len(trades) == metrics["closed_trades"]
         assert c.get("/api/backtests/9999", headers=AUTH).status_code == 404
 
+        v = c.post(f"/api/validation/{rid}", json={"policy": {"wf_folds": 2, "wf_grid_params": 1}}, headers=AUTH)
+        assert v.status_code == 200, v.text
+        assert v.json()["status"] == "completed" and v.json()["backtest_run_id"] == rid
+        assert v.json()["verdict"] in ("PASSED", "FAILED", "INCONCLUSIVE")
+        assert c.get(f"/api/validation/{v.json()['id']}", headers=AUTH).json()["report"]["checks"]
+        assert c.get("/api/validation", headers=AUTH).json()["items"][0]["id"] == v.json()["id"]
+        assert c.post("/api/validation/9999", headers=AUTH).status_code == 404
+
         strategies = c.get("/api/strategies", headers=AUTH).json()
         assert strategies["available"][0]["name"] == "trend_continuation"
         assert c.post("/api/strategies", json={"name": "trend_continuation", "params": {"fast_ema": 99}},

@@ -82,10 +82,19 @@ against the Python backtest on the same symbol and period before its results are
 | Monitoring | Phone alerts for errors, disconnects, lockouts and kill-switch events. A full decision journal (signals, approvals, rejections, fills) that can be exported to an external journal app |
 | Proof before money | At least 2–3 months of demo forward testing, compared trade by trade with what the backtest predicted. Only then a separate, explicit live-trading release with the smallest size, scaling only if live matches demo |
 
-## Phase D — UI
+## Phase D — UI (done)
 
-Next.js + TypeScript + Tailwind dark terminal UI, using only real backend data and showing empty
-states where nothing exists yet.
+Next.js 16 + TypeScript + Tailwind dark terminal UI, using only real backend data, with empty states.
+Pages: overview, system health, markets (filters, contract specs, candle charts per timeframe),
+historical data (coverage, download runs and quality, download form), news calendar, strategy library
+and frozen versions, backtests (form, list, detail with equity, drawdown, costs, regime/side/month
+breakdowns, trade journal, reproducibility data), validation (list, detail with checks, segments,
+walk-forward, sensitivity), and the demo gate (all requirements, currently locked).
+Server-side proxy with an allow-list and same-origin check, so the token stays on the server.
+Verified with a production build and Chromium screenshots at desktop and phone widths
+(no console errors, no horizontal scrolling).
+Not yet: an audit-log viewer, a settings editor, and a standalone multi-timeframe analysis page
+(the market page switches timeframes).
 
 ## Phase E — Demo-only execution
 

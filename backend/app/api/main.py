@@ -391,11 +391,21 @@ def _report_summary(r: ValidationReport) -> dict:
 def validation_create(backtest_id: int, _: Auth, db: DB, req: ValidationRequest | None = None) -> dict:
     """Validate the strategy version, symbol, timeframes, range and costs of an existing backtest."""
     run = _get_run(db, backtest_id)
+    if run.status != "completed":
+        raise HTTPException(409, "only completed backtests can be validated")
     version = db.get(StrategyVersion, run.strategy_version_id)
-    rep = run_validation_report(
-        db, symbol=run.symbol, timeframe=run.timeframe, htf=run.htf, start=run.start, end=run.end,
-        strategy_name=version.name, params=version.params, config=BacktestConfig(**run.config),
-        policy=(req or ValidationRequest()).policy, backtest_run_id=run.id)
+
+    def utc(dt: datetime) -> datetime:  # SQLite returns naive datetimes; stored values are UTC
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+    try:
+        rep = run_validation_report(
+            db, symbol=run.symbol, timeframe=run.timeframe, htf=run.htf, start=utc(run.start),
+            end=utc(run.end), strategy_name=version.name, params=version.params,
+            config=BacktestConfig(**run.config), policy=(req or ValidationRequest()).policy,
+            backtest_run_id=run.id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     return {**_report_summary(rep), "report": rep.report}
 
 

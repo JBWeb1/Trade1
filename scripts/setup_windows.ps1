@@ -61,6 +61,28 @@ try {
     if ($LASTEXITCODE -ne 0) { Fail "some tests failed - copy the output above and send it to me." }
 } finally { Pop-Location }
 
+Step "Setting up the dashboard (Node.js)"
+$Frontend = Join-Path $Root "frontend"
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    $ans = Read-Host "Node.js (needed for the dashboard) not found. Install the LTS version with winget? (y/n)"
+    if ($ans -eq "y") {
+        winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+    }
+}
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    Push-Location $Frontend
+    try {
+        & npm ci
+        if ($LASTEXITCODE -ne 0) { Fail "npm ci failed (see above)" }
+        & npm run build
+        if ($LASTEXITCODE -ne 0) { Fail "dashboard build failed (see above)" }
+    } finally { Pop-Location }
+} else {
+    Write-Host "Skipping the dashboard: Node.js is not installed. Everything else works from the command line." -ForegroundColor Yellow
+}
+
 Write-Host "`nSETUP COMPLETE." -ForegroundColor Green
 Write-Host "Next: open MetaTrader 5, log in to your Exness DEMO account, then double-click scripts\run_checks.bat"
+Write-Host "Dashboard: double-click scripts\start_trade1.bat"
 Read-Host "Press Enter to close"

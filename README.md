@@ -3,8 +3,8 @@
 A research-first algorithmic trading platform for an **Exness MetaTrader 5 demo account**:
 historical data → backtesting → out-of-sample validation → (later) demo-only automation.
 
-> **Status: data foundation (Phase B) and backtesting + validation (Phase C) done.**
-> The dashboard (Phase D) and demo-only execution (Phase E) are next.
+> **Status: data foundation (B), backtesting + validation (C) and the dashboard (D) are done.**
+> Demo-only execution (Phase E) is next, and unlocks only after a strategy passes validation on real data.
 > **Live trading does not exist in this release**, and no code path can send a broker order.
 > See [docs/PLAN.md](docs/PLAN.md) for the phase plan.
 
@@ -23,7 +23,8 @@ historical data → backtesting → out-of-sample validation → (later) demo-on
 | Validation: development / validation / untouched out-of-sample split, walk-forward, parameter sensitivity, sample-size rules, PASSED / FAILED / INCONCLUSIVE | ✅ |
 | Metrics, stored runs and trades, reproducible strategy versions | ✅ |
 | Diagnostics, optional Forex Factory news blackout | ✅ |
-| Dashboard, demo-only execution, forward testing, VPS monitoring | ⏳ next phases |
+| Dashboard (Next.js): overview, markets + price charts, data quality, strategies, backtests with equity/drawdown/trade journal, validation reports, news, system health, demo gate | ✅ |
+| Demo-only execution, forward testing, VPS monitoring and alerts | ⏳ next phases |
 
 ## Getting started on your PC (about 5 minutes)
 
@@ -50,6 +51,10 @@ rejected, because the broker's minimum lot (0.01) already risks more than 0.25�
 rejects those trades rather than over-risking. In MT5 you can open a new demo account with a realistic
 balance.
 
+6. Double-click **`scripts\start_trade1.bat`** to open the **dashboard** at http://127.0.0.1:3000. It starts
+   the backend and dashboard in two windows (close them to stop). From the dashboard you can download
+   history, run backtests and validate them without the command line.
+
 Share the two report files with Claude to review the results. Backtest results are historical,
 in-sample simulations (validation comes next). They are not a forecast.
 
@@ -61,7 +66,8 @@ M1 histories.
 * Windows 10/11 with the **MetaTrader 5 terminal from Exness**, logged in to your demo account.
 * Python 3.12 or 3.13, 64-bit. The `MetaTrader5` package must install on your Python version.
   If `pip install MetaTrader5` fails, use Python 3.12.
-* PostgreSQL 16 (or 15+).
+* PostgreSQL 16 (or 15+), optional: SQLite is used by default.
+* Node.js 22 LTS for the dashboard. `setup_windows.bat` offers to install it.
 
 ## Setup (Windows, PowerShell)
 
@@ -143,6 +149,19 @@ Interactive docs: http://127.0.0.1:8000/docs
 | GET | `/api/backtests`, `/api/backtests/{id}`, `/{id}/metrics`, `/{id}/trades` | Results, equity curve, trades |
 | POST | `/api/validation/{backtest_id}` | Validate a backtest's strategy, symbol, range and costs |
 | GET | `/api/validation`, `/api/validation/{id}` | Validation reports and verdicts |
+
+## Dashboard
+
+`frontend/` is a Next.js 16 + TypeScript + Tailwind app. It listens on **127.0.0.1 only**.
+
+* The browser never sees the API token. The dashboard's server reads `TRADE1_API_TOKEN` from
+  `backend/.env` and adds it when calling the backend.
+* The dashboard's proxy forwards only an allow-list of read routes plus the reviewed actions (discover,
+  download, backtest, validate, news refresh). It refuses requests from other websites.
+* Every number comes from stored backend data. Pages show empty states instead of sample figures.
+  Backtest pages carry a "historical simulation" label.
+
+Development: `cd frontend && npm ci && npm run dev` (with the backend running on port 8000).
 
 ## Backtesting
 

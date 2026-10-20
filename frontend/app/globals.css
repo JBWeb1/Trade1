@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* Dark trading-terminal palette. Colour carries meaning only together with text labels. */
+@theme {
+  --color-bg: #0b0e13;
+  --color-panel: #121722;
+  --color-panel-2: #182030;
+  --color-line: #232c3d;
+  --color-fg: #d8dee9;
+  --color-dim: #8a96aa;
+  --color-faint: #5d6880;
+  --color-accent: #4f9cf7;
+  --color-pos: #3ecf8e;
+  --color-neg: #f2616b;
+  --color-warn: #f0b84a;
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "Liberation Mono", monospace;
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  color-scheme: dark;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
