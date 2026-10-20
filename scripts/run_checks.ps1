@@ -31,7 +31,7 @@ try {
     Invoke-Trade1 markets
 
     $symbol = Read-Host "`nSymbol to download (exact name as your MT5 Market Watch shows it, e.g. EURUSDm)"
-    $today = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+    $today = (Get-Date).ToUniversalTime().AddDays(1).ToString("yyyy-MM-dd")  # tomorrow: include today's bars (capped at now)
     $m1start = (Get-Date).ToUniversalTime().AddDays(-20).ToString("yyyy-MM-dd")
     Write-Host "`n===== 3. History: $symbol H1, 2023 to today =====" -ForegroundColor Cyan
     Invoke-Trade1 ingest --symbol $symbol --timeframe H1 --start 2023-01-01 --end $today

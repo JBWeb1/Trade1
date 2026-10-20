@@ -30,7 +30,7 @@ if ([double]$balance -lt 200) {
 }
 $commission = Read-Host "Commission per lot per side in account currency (0 for Exness Standard) [0]"; if (-not $commission) { $commission = "0" }
 
-$end = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+$end = (Get-Date).ToUniversalTime().AddDays(1).ToString("yyyy-MM-dd")  # tomorrow: include today's bars (capped at now)
 switch ($tf) {
     "M1"  { $start = (Get-Date).ToUniversalTime().AddDays(-90).ToString("yyyy-MM-dd"); $htf = "H1" }
     "M15" { $start = (Get-Date).ToUniversalTime().AddDays(-365).ToString("yyyy-MM-dd"); $htf = "H4" }
