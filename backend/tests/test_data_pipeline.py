@@ -120,3 +120,13 @@ def test_ingestion_validates_input(session, gateway):
         ingest_bars(session, gateway, "EURUSDm", "H1", MON, MON)
     with pytest.raises(ValueError):
         ingest_bars(session, gateway, "EURUSDm", "W1", MON, MON + timedelta(days=1))
+
+
+def test_forming_bar_is_never_stored(session, gateway, fake):
+    now = datetime.now(UTC)
+    start = (now - timedelta(hours=10)).replace(minute=0, second=0, microsecond=0)
+    fake.set_bars("EURUSDm", fake.TIMEFRAME_H1, make_rates(start, 11, 60))  # last bar opened this hour
+    run = ingest_bars(session, gateway, "EURUSDm", "H1", start, now)
+    stored = load_bars(session, "EURUSDm", "H1")
+    assert run.source["forming_bars_dropped"] == 1
+    assert (stored["time"] + pd.Timedelta(hours=1) <= pd.Timestamp(now)).all()

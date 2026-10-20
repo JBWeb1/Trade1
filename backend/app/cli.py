@@ -4,6 +4,7 @@
     python -m app.cli discover
     python -m app.cli ingest --symbol EURUSDm --timeframe H1 --start 2024-01-01 --end 2025-01-01
     python -m app.cli coverage
+    python -m app.cli backtest --symbol EURUSDm --timeframe H1 --htf H4 --start 2023-01-01 --end 2025-01-01
     python -m app.cli news-check            # fetch + validate the configured news feed (no save)
     python -m app.cli news-fetch            # fetch and store
     python -m app.cli news-import --file ff_calendar_thisweek.json
@@ -84,6 +85,55 @@ def cmd_coverage(_gw, _args) -> int:
     return 0
 
 
+def cmd_backtest(_gw, args) -> int:
+    from .backtest.engine import BacktestConfig, CostModel, RiskModel
+    from .backtest.service import BacktestError, instrument_spec, run_backtest
+    currency = args.currency
+    if currency is None:
+        with session_scope() as s:
+            try:
+                currency = instrument_spec(s, args.symbol).get("account_currency") or "USD"
+            except BacktestError as exc:
+                print(f"BACKTEST NOT STARTED: {exc}")
+                return 1
+    cfg = BacktestConfig(
+        starting_balance=args.balance, account_currency=currency, leverage=args.leverage,
+        costs=CostModel(commission_per_lot_per_side=args.commission, slippage_points=args.slippage,
+                        min_spread_points=args.min_spread, spread_multiplier=args.spread_multiplier),
+        risk=RiskModel(risk_per_trade_pct=args.risk))
+    params = json.loads(args.params) if args.params else {}
+    with session_scope() as s:
+        run = run_backtest(s, symbol=args.symbol, timeframe=args.timeframe, htf=args.htf,
+                           start=_date(args.start), end=_date(args.end), strategy_name=args.strategy,
+                           params=params, config=cfg)
+        if run.status != "completed":
+            print(f"BACKTEST FAILED (run {run.id}): {run.error}")
+            return 1
+        m = run.metrics
+        print(f"\n{m['label']}\n")
+        print(f"Run #{run.id}  {args.symbol} {args.timeframe}" + (f" (+{args.htf} filter)" if args.htf else "")
+              + f"  {args.start} -> {args.end}  strategy {m['strategy']['name']} v{m['strategy']['version']}"
+              f" [{m['strategy']['params_hash']}]")
+        rows = [("Closed trades", m["closed_trades"]), ("Win rate", m["win_rate"]),
+                ("Average win / loss", f"{m['average_win']} / {m['average_loss']}"),
+                ("Expectancy per trade (after costs)", m["expectancy_per_trade"]),
+                ("Expectancy in R", m["expectancy_r"]), ("Profit factor", m["profit_factor"]),
+                ("Net profit / return %", f"{m['net_profit']} / {m['net_return_pct']}%"),
+                ("Max drawdown %", m.get("max_drawdown_pct")),
+                ("Max drawdown duration (days)", m.get("max_drawdown_duration_days")),
+                ("Sharpe (daily, annualised, rf=0)", m.get("sharpe_daily_annualised")),
+                ("Longest losing streak", m["longest_losing_streak"]),
+                ("Exposure %", m["exposure_pct"]), ("Costs", m["costs"]),
+                ("Exit reasons", m["exit_reasons"]), ("Rejected signals", m["rejections"])]
+        for k, v in rows:
+            print(f"  {k:<38} {v}")
+        if m.get("sample_warning"):
+            print(f"\nWARNING: {m['sample_warning']}")
+        for n in m["notes"]:
+            print(f"NOTE: {n}")
+    return 0
+
+
 def cmd_news_check(_gw, _args) -> int:
     from .integrations.news import forexfactory
     url = get_settings().news_feed_url
@@ -132,6 +182,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--start", required=True, help="UTC date/time, e.g. 2024-01-01")
     p.add_argument("--end", required=True)
     sub.add_parser("coverage")
+    p = sub.add_parser("backtest")
+    p.add_argument("--symbol", required=True)
+    p.add_argument("--timeframe", required=True, choices=[t.value for t in Timeframe])
+    p.add_argument("--htf", choices=[t.value for t in Timeframe], default=None)
+    p.add_argument("--start", required=True)
+    p.add_argument("--end", required=True)
+    p.add_argument("--strategy", default="trend_continuation")
+    p.add_argument("--params", default="", help='JSON, e.g. {"fast_ema": 20}')
+    p.add_argument("--balance", type=float, default=10_000)
+    p.add_argument("--currency", default=None, help="defaults to the MT5 account currency")
+    p.add_argument("--leverage", type=float, default=100)
+    p.add_argument("--risk", type=float, default=0.25, help="percent of equity per trade")
+    p.add_argument("--commission", type=float, default=0.0, help="per lot per side, account currency")
+    p.add_argument("--slippage", type=float, default=0.0, help="points")
+    p.add_argument("--min-spread", type=float, default=0.0, help="points")
+    p.add_argument("--spread-multiplier", type=float, default=1.0)
     sub.add_parser("news-check")
     sub.add_parser("news-fetch")
     p = sub.add_parser("news-import")
@@ -142,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(settings.log_level)
     gw = MT5Gateway(settings)
     handlers = {"mt5-check": cmd_mt5_check, "discover": cmd_discover, "ingest": cmd_ingest,
-                "coverage": cmd_coverage, "news-check": cmd_news_check,
+                "coverage": cmd_coverage, "backtest": cmd_backtest, "news-check": cmd_news_check,
                 "news-fetch": cmd_news_fetch, "news-import": cmd_news_import}
     try:
         return handlers[args.cmd](gw, args)

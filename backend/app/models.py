@@ -126,3 +126,62 @@ class EconomicEventRow(Base):
     __table_args__ = (UniqueConstraint("provider", "event_time", "currency", "title",
                                        name="uq_event_provider_time_ccy_title"),)
 
+
+
+class StrategyVersion(Base):
+    """Immutable: a (name, version, params) combination is stored once and never edited."""
+
+    __tablename__ = "strategy_versions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    version: Mapped[str] = mapped_column(String(16))
+    params: Mapped[dict] = mapped_column(JsonType)
+    params_hash: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (UniqueConstraint("name", "version", "params_hash", name="uq_strategy_version"),)
+
+
+class BacktestRun(Base):
+    __tablename__ = "backtest_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_version_id: Mapped[int] = mapped_column(ForeignKey("strategy_versions.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(64), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8))
+    htf: Mapped[str | None] = mapped_column(String(8))
+    start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    config: Mapped[dict] = mapped_column(JsonType)
+    data_fingerprint: Mapped[dict] = mapped_column(JsonType, default=dict)
+    result_kind: Mapped[str] = mapped_column(String(32), default="historical_backtest")
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|completed|failed
+    error: Mapped[str | None] = mapped_column(Text)
+    metrics: Mapped[dict] = mapped_column(JsonType, default=dict)
+    equity_curve: Mapped[list] = mapped_column(JsonType, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BacktestTrade(Base):
+    __tablename__ = "backtest_trades"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("backtest_runs.id", ondelete="CASCADE"), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    entry_price: Mapped[float] = mapped_column(Float)
+    exit_price: Mapped[float | None] = mapped_column(Float)
+    volume: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float] = mapped_column(Float)
+    take_profit: Mapped[float] = mapped_column(Float)
+    exit_reason: Mapped[str] = mapped_column(String(64))
+    gross_pnl: Mapped[float] = mapped_column(Float)
+    commission: Mapped[float] = mapped_column(Float)
+    swap: Mapped[float] = mapped_column(Float)
+    spread_cost: Mapped[float] = mapped_column(Float)
+    slippage_cost: Mapped[float] = mapped_column(Float)
+    net_pnl: Mapped[float] = mapped_column(Float)
+    planned_risk_money: Mapped[float] = mapped_column(Float)
+    bars_held: Mapped[int] = mapped_column(Integer)
+    ambiguous_bar: Mapped[bool] = mapped_column(Boolean, default=False)
+    rationale: Mapped[str] = mapped_column(Text)

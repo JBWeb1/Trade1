@@ -14,6 +14,9 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .. import __version__
+from ..backtest.engine import BacktestConfig
+from ..backtest.service import get_or_create_version, run_backtest
+from ..backtest.strategies import REGISTRY, get_strategy
 from ..config import Settings, get_settings
 from ..data.ingestion import coverage, ingest_bars, load_bars
 from ..db import get_session
@@ -23,7 +26,7 @@ from ..integrations.news.filter import NewsBlackout
 from ..integrations.news.service import NewsDisabled, RefreshTooSoon, refresh_from_feed
 from ..integrations.news.store import coverage as news_coverage, load_events
 from ..markets.service import sync_instruments
-from ..models import AuditLog, IngestionRun, Instrument
+from ..models import AuditLog, BacktestRun, BacktestTrade, IngestionRun, Instrument, StrategyVersion
 from ..mt5.constants import Timeframe
 from ..mt5.gateway import MT5Error, MT5Gateway
 from .deps import get_gateway, require_token
@@ -257,3 +260,113 @@ def news_blackout(_: Auth, db: DB, symbol: str = Query(min_length=1, max_length=
     d = f.check(inst.spec, at)
     return {"symbol": symbol, "at": at, "blocked": d.blocked, "reason": d.reason,
             "applicable": d.applicable, "calendar_data_available": cov["weeks_with_events"] > 0}
+
+
+# ---------------------------------------------------------------- strategies and backtests
+
+@app.get("/api/strategies")
+def strategies(_: Auth, db: DB) -> dict:
+    versions = db.scalars(select(StrategyVersion).order_by(StrategyVersion.id.desc()).limit(200)).all()
+    return {"available": [{"name": n, "version": c.version, "description": c.description,
+                           "params_schema": c.Params.model_json_schema()} for n, c in REGISTRY.items()],
+            "versions": [{"id": v.id, "name": v.name, "version": v.version, "params": v.params,
+                          "params_hash": v.params_hash, "created_at": v.created_at} for v in versions]}
+
+
+class StrategyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    params: dict = Field(default_factory=dict)
+
+
+@app.post("/api/strategies")
+def strategy_create(req: StrategyCreate, _: Auth, db: DB) -> dict:
+    try:
+        v = get_or_create_version(db, get_strategy(req.name, req.params))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return {"id": v.id, "name": v.name, "version": v.version, "params": v.params, "params_hash": v.params_hash}
+
+
+@app.get("/api/strategies/{version_id}")
+def strategy_detail(version_id: int, _: Auth, db: DB) -> dict:
+    v = db.get(StrategyVersion, version_id)
+    if v is None:
+        raise HTTPException(404, "strategy version not found")
+    runs = db.scalars(select(BacktestRun.id).where(BacktestRun.strategy_version_id == v.id)).all()
+    return {"id": v.id, "name": v.name, "version": v.version, "params": v.params,
+            "params_hash": v.params_hash, "backtest_run_ids": runs}
+
+
+class BacktestRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=64)
+    timeframe: Timeframe
+    htf: Timeframe | None = None
+    start: datetime
+    end: datetime
+    strategy: str = Field(min_length=1, max_length=64)
+    params: dict = Field(default_factory=dict)
+    config: BacktestConfig = BacktestConfig()
+
+    @field_validator("start", "end")
+    @classmethod
+    def _aware(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            raise ValueError("timestamps must include a timezone")
+        return v.astimezone(timezone.utc)
+
+
+def _run_summary(r: BacktestRun) -> dict:
+    m = r.metrics or {}
+    return {"id": r.id, "status": r.status, "error": r.error, "result_kind": r.result_kind,
+            "symbol": r.symbol, "timeframe": r.timeframe, "htf": r.htf, "start": r.start, "end": r.end,
+            "strategy_version_id": r.strategy_version_id, "started_at": r.started_at,
+            "finished_at": r.finished_at,
+            "headline": {k: m.get(k) for k in ("closed_trades", "net_return_pct", "win_rate",
+                                                "expectancy_per_trade", "profit_factor",
+                                                "max_drawdown_pct", "sample_warning")}}
+
+
+@app.post("/api/backtests")
+def backtest_create(req: BacktestRequest, _: Auth, db: DB) -> dict:
+    try:
+        run = run_backtest(db, symbol=req.symbol, timeframe=req.timeframe.value,
+                           htf=req.htf.value if req.htf else None, start=req.start, end=req.end,
+                           strategy_name=req.strategy, params=req.params, config=req.config)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return _run_summary(run)
+
+
+@app.get("/api/backtests")
+def backtest_list(_: Auth, db: DB, limit: int = Query(50, ge=1, le=500)) -> dict:
+    rows = db.scalars(select(BacktestRun).order_by(BacktestRun.id.desc()).limit(limit)).all()
+    return {"items": [_run_summary(r) for r in rows]}
+
+
+def _get_run(db: Session, run_id: int) -> BacktestRun:
+    r = db.get(BacktestRun, run_id)
+    if r is None:
+        raise HTTPException(404, "backtest not found")
+    return r
+
+
+@app.get("/api/backtests/{run_id}")
+def backtest_detail(run_id: int, _: Auth, db: DB) -> dict:
+    r = _get_run(db, run_id)
+    return {**_run_summary(r), "config": r.config, "data_fingerprint": r.data_fingerprint,
+            "equity_curve": r.equity_curve}
+
+
+@app.get("/api/backtests/{run_id}/metrics")
+def backtest_metrics(run_id: int, _: Auth, db: DB) -> dict:
+    return _get_run(db, run_id).metrics or {}
+
+
+@app.get("/api/backtests/{run_id}/trades")
+def backtest_trades(run_id: int, _: Auth, db: DB, limit: int = Query(1000, ge=1, le=20000),
+                    offset: int = Query(0, ge=0)) -> dict:
+    _get_run(db, run_id)
+    rows = db.scalars(select(BacktestTrade).where(BacktestTrade.run_id == run_id)
+                      .order_by(BacktestTrade.entry_time).limit(limit).offset(offset)).all()
+    cols = [c.name for c in BacktestTrade.__table__.columns]
+    return {"items": [{c: getattr(t, c) for c in cols} for t in rows]}

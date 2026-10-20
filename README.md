@@ -3,9 +3,10 @@
 A research-first algorithmic trading platform for an **Exness MetaTrader 5 demo account**:
 historical data → backtesting → out-of-sample validation → (later) demo-only automation.
 
-> **Status: Phase B (foundation + historical data pipeline) is done.** There is no backtest
-> engine, strategy, UI or order execution yet. **Live trading does not exist in this release**,
-> and no code path can send a broker order. See [docs/PLAN.md](docs/PLAN.md) for the phase plan.
+> **Status: data foundation (Phase B) done; backtest engine (Phase C, first part) done.**
+> Out-of-sample/walk-forward validation, more strategies, the UI and demo execution are next.
+> **Live trading does not exist in this release**, and no code path can send a broker order.
+> See [docs/PLAN.md](docs/PLAN.md) for the phase plan.
 
 ## What works now
 
@@ -14,25 +15,36 @@ historical data → backtesting → out-of-sample validation → (later) demo-on
 | MT5 connection (read-only gateway, serialised calls, UTC conversion) | ✅ |
 | Demo-account verification from the terminal's own `trade_mode` (fails closed) | ✅ |
 | Market discovery: every symbol your account exposes, categorised, with full contract specs and metadata-validation flags | ✅ |
-| Historical bars for M1 / M15 / H1 / H4: chunked download, quality checks, idempotent storage, per-run audit record | ✅ |
-| Diagnostics: connection, demo verification, server-clock offset, flagged symbols, problem downloads | ✅ |
-| Optional Forex Factory calendar: import, validation, news-blackout check | ✅ (format to be confirmed on your machine) |
-| PostgreSQL schema with Alembic migrations | ✅ |
-| Backtesting, strategies, validation, risk engine, UI, demo execution | ⏳ later phases |
+| Historical bars for M1 / M15 / H1 / H4: chunked download, quality checks, forming bar dropped, idempotent storage, per-run audit record | ✅ |
+| Backtest engine: bar-based, spread/commission/slippage/swap, gaps, conservative intrabar rule, volume and margin checks, risk lockouts | ✅ |
+| Multi-timeframe alignment without look-ahead (tested) | ✅ |
+| Strategy interface + `trend_continuation` v1.0.0 (a hypothesis to test, not a proven strategy) | ✅ |
+| Metrics, stored runs and trades, reproducible strategy versions | ✅ |
+| Diagnostics, optional Forex Factory news blackout | ✅ |
+| Out-of-sample / walk-forward validation, more strategies, UI, demo execution | ⏳ next phases |
 
-## Quick install on Windows (double-click)
+## Getting started on your PC (about 5 minutes)
 
-Trade1 is not a plugin that goes *inside* MetaTrader. It is a separate program that runs next to the
-MT5 terminal and talks to it through MetaQuotes' official `MetaTrader5` Python package.
+Trade1 does **not** go inside MetaTrader. It is a separate Python program that runs next to the
+MT5 terminal and reads data from it through MetaQuotes' official `MetaTrader5` package. There is
+nothing to add to MT5 itself. It cannot place trades: there is no live mode, and it checks that the
+account is a demo before doing anything.
 
-1. Download this repository: on GitHub, choose the `claude/admiring-pasteur-eqo6ed` branch, then
-   **Code → Download ZIP**, and unzip it to e.g. `C:\Trade1`.
-2. Double-click **`scripts\setup_windows.bat`**. It finds or installs Python 3.12, creates
-   `backend\.venv`, installs the dependencies, creates `backend\.env` with a local SQLite database and
-   a random API token, creates the tables, and runs the tests.
-3. Open MetaTrader 5 and log in to your Exness **demo** account.
-4. Double-click **`scripts\run_checks.bat`**. It runs the demo check, market discovery and two history
-   downloads, and saves everything to `trade1_check_report.txt`. It places no orders.
+1. **Put the folder outside OneDrive** (recommended), e.g. `C:\Trade1`. Setup creates thousands of small
+   files, and OneDrive would try to sync all of them. (To get the code: on GitHub choose the
+   `claude/admiring-pasteur-eqo6ed` branch → **Code → Download ZIP**, and unzip it.)
+2. Double-click **`scripts\setup_windows.bat`**. If it asks to install Python 3.12, type **y** and press
+   Enter. Wait until it shows **SETUP COMPLETE**. It creates `backend\.venv`, installs dependencies,
+   writes `backend\.env` (local SQLite database, random API token), creates the tables and runs the tests.
+3. Keep **MT5 open and logged in to your Exness demo** (a server such as `Exness-MT5Trial10`).
+4. Double-click **`scripts\run_checks.bat`**. When asked for a symbol, type the exact Market Watch name,
+   e.g. **`XAUUSDm`** (gold). It checks the demo account, lists your markets and downloads history. It
+   places no orders. The output is saved to `trade1_check_report.txt`.
+5. Double-click **`scripts\run_backtest.bat`** to download history for a symbol and timeframe and run
+   the first backtest. The output is saved to `trade1_backtest_<date>.txt`.
+
+Share the two report files with Claude to review the results. Backtest results are historical,
+in-sample simulations (validation comes next). They are not a forecast.
 
 SQLite is enough for getting started. Switch `TRADE1_DATABASE_URL` to PostgreSQL (below) for large
 M1 histories.
@@ -119,6 +131,32 @@ Interactive docs: http://127.0.0.1:8000/docs
 | POST | `/api/news/refresh` | Fetch the calendar feed (rate-limited) |
 | GET | `/api/news/events?start=&end=&currency=&impact=` | Stored events + coverage |
 | GET | `/api/news/blackout?symbol=&at=` | Would a new entry be blocked by news? |
+| GET/POST | `/api/strategies`, GET `/api/strategies/{id}` | Available strategies, immutable parameter versions |
+| POST | `/api/backtests` | Run a backtest on stored data |
+| GET | `/api/backtests`, `/api/backtests/{id}`, `/{id}/metrics`, `/{id}/trades` | Results, equity curve, trades |
+
+## Backtesting
+
+```powershell
+python -m app.cli backtest --symbol XAUUSDm --timeframe H1 --htf H4 --start 2023-01-01 --end 2025-01-01 `
+    --balance 10000 --risk 0.25 --commission 0 --slippage 0
+```
+
+You need the primary and the higher-timeframe history stored first (`ingest`), plus `discover`
+for the contract specification. Execution model, stated in every report:
+
+* Bars are MT5 **bid** bars. Buys fill at ask = bid + spread; spread per bar is the recorded value
+  (often the bar's minimum, so you can add `--min-spread` / `--spread-multiplier`).
+* Decisions at a bar's close, fills at the **next bar's open**. A higher-timeframe bar is used only
+  after it has closed.
+* Stop and target checked against high/low. If both fall inside one bar, the **stop is assumed first**.
+  A bar opening beyond the stop fills at that open (gap). Targets fill at the target price.
+* Size = `--risk` % of equity at the stop including commission, rounded **down** to the volume step.
+  If the broker minimum would exceed the risk, the trade is rejected, not enlarged. Margin is checked.
+* Swap is charged per night when the symbol's swap mode is points (triple on Wednesday); otherwise
+  the report says it is not modelled. Exness swap-free accounts: treat swap as 0.
+* Daily-loss lockout, equity-drawdown lockout, and a cooldown after consecutive losses.
+* Every report includes the sample-size warning, rejected signals by reason, costs and a data fingerprint.
 
 ## Optional: Forex Factory economic calendar
 

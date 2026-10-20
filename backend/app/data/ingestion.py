@@ -81,6 +81,12 @@ def ingest_bars(session: Session, gateway: MT5Gateway, symbol: str, timeframe: T
         frames = [gateway.get_historical_bars(symbol, tf, a, b) for a, b in _chunks(start, end, minutes)]
         frames = [f for f in frames if not f.empty]
         raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        if not raw.empty:
+            # drop the bar that is still forming: it closes after the retrieval time
+            closes = pd.to_datetime(raw["time"], utc=True) + pd.Timedelta(minutes=minutes)
+            forming = closes > pd.Timestamp(utcnow())
+            run.source["forming_bars_dropped"] = int(forming.sum())
+            raw = raw[~forming]
         df, report = clean_and_check(raw, minutes, start, end,
                                      gateway.settings.mt5_server_utc_offset_hours)
         run.bars_received = report.bars_received

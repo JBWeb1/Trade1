@@ -95,10 +95,21 @@ def test_ingest_validation(client, body):
     assert client.post("/api/market-data/ingest", json=body, headers=AUTH).status_code == 422
 
 
+# Every route that can change state must be listed here after review. None may submit orders.
+REVIEWED_WRITE_ROUTES = {
+    ("POST", "/api/markets/sync"), ("POST", "/api/market-data/ingest"), ("POST", "/api/news/refresh"),
+    ("POST", "/api/strategies"), ("POST", "/api/backtests"),
+}
+
+
 def test_no_route_can_send_orders():
+    writes = set()
     for route in api.app.routes:
         path = getattr(route, "path", "")
-        assert "order" not in path.lower() and "trade" not in path.lower(), path
+        assert "order" not in path.lower(), path
+        for method in getattr(route, "methods", set()) - {"GET", "HEAD"}:
+            writes.add((method, path))
+    assert writes == REVIEWED_WRITE_ROUTES
 
 
 def test_application_code_never_calls_order_send():

@@ -37,7 +37,11 @@ to any logged-in account.
 * API routes (bearer auth, fail closed) and CLI.
 * Optional Forex Factory calendar adapter and news blackout filter.
 
-## Phase C — Backtesting (next)
+## Phase C — Backtesting (in progress)
+
+Done: items 1–5 below except the extra strategies; `trend_continuation` v1.0.0 implemented.
+Next: item 6 (validation), then strategies B–D.
+
 
 1. Multi-timeframe bar alignment: a higher-timeframe bar becomes visible only after it **closes**
    (H4 bar opened 08:00 → usable from 12:00). Tests prove no look-ahead.
@@ -56,6 +60,15 @@ to any logged-in account.
    parameter sensitivity, and verdicts PASSED / FAILED / INCONCLUSIVE with reasons. The final
    out-of-sample set is locked after first use.
 7. The news blackout is applied only where calendar coverage exists, and coverage is reported.
+
+### Alternative route considered: MT5 Expert Advisor
+
+A strategy could also be rewritten in MQL5 as an Expert Advisor and tested in MT5's built-in
+Strategy Tester, which offers tick modelling from the broker's data. The liquidity-sweep strategy
+from the original prototype (commit `0dbaf88`) would be a natural first candidate. This gives a quick
+second opinion on a strategy, but it does not replace this pipeline: MQL5 code cannot use Trade1's
+validation gate, audit trail or demo-only safety checks. If used, an EA must be cross-checked
+against the Python backtest on the same symbol and period before its results are trusted.
 
 ## Phase D — UI
 
