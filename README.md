@@ -20,6 +20,23 @@ historical data → backtesting → out-of-sample validation → (later) demo-on
 | PostgreSQL schema with Alembic migrations | ✅ |
 | Backtesting, strategies, validation, risk engine, UI, demo execution | ⏳ later phases |
 
+## Quick install on Windows (double-click)
+
+Trade1 is not a plugin that goes *inside* MetaTrader. It is a separate program that runs next to the
+MT5 terminal and talks to it through MetaQuotes' official `MetaTrader5` Python package.
+
+1. Download this repository: on GitHub, choose the `claude/admiring-pasteur-eqo6ed` branch, then
+   **Code → Download ZIP**, and unzip it to e.g. `C:\Trade1`.
+2. Double-click **`scripts\setup_windows.bat`**. It finds or installs Python 3.12, creates
+   `backend\.venv`, installs the dependencies, creates `backend\.env` with a local SQLite database and
+   a random API token, creates the tables, and runs the tests.
+3. Open MetaTrader 5 and log in to your Exness **demo** account.
+4. Double-click **`scripts\run_checks.bat`**. It runs the demo check, market discovery and two history
+   downloads, and saves everything to `trade1_check_report.txt`. It places no orders.
+
+SQLite is enough for getting started. Switch `TRADE1_DATABASE_URL` to PostgreSQL (below) for large
+M1 histories.
+
 ## Requirements
 
 * Windows 10/11 with the **MetaTrader 5 terminal from Exness**, logged in to your demo account.

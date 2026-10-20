@@ -9,3 +9,5 @@ venv/
 .pytest_cache/
 node_modules/
 .next/
+backend/trade1.db
+trade1_check_report.txt
