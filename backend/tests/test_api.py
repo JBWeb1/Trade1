@@ -121,7 +121,8 @@ def test_only_the_demo_execution_gateway_calls_order_send():
     """order_send may appear in exactly one module: app/execution/gateway.py."""
     import pathlib
     root = pathlib.Path(api.__file__).resolve().parents[1]
-    offenders = sorted(str(p.relative_to(root)) for p in root.rglob("*.py") if "order_send" in p.read_text(encoding="utf-8"))
+    offenders = sorted(p.relative_to(root).as_posix() for p in root.rglob("*.py")
+                       if "order_send" in p.read_text(encoding="utf-8"))
     assert offenders == ["execution/gateway.py"]
 
 
