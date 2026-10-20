@@ -73,3 +73,35 @@ def test_discover_and_sync_is_idempotent(session, settings):
     session.flush()
     gold = session.scalars(select(Instrument).where(Instrument.symbol == "XAUUSDm")).one()
     assert s3["removed"] == 1 and not gold.metadata_ok and "no longer offered" in gold.issues[-1]
+
+
+def test_hidden_symbols_are_reread_before_being_flagged(settings):
+    """MT5 reports blank tick values for symbols outside Market Watch until selected."""
+    class HiddenFake(FakeMT5):
+        def __init__(self):
+            super().__init__(symbols=[symbol(), symbol(name="GBPUSDm", base="GBP", visible=False),
+                                      symbol(name="DEADm", visible=False, trade_mode=0)])
+            self.selected = set()
+            self.select_calls = []
+
+        def symbol_info(self, name):
+            s = self.symbols.get(name)
+            if s is None or s.visible or name in self.selected:
+                return s if s is None or s.visible else s._replace(visible=True)
+            return s._replace(trade_tick_value=0.0)  # blank until selected
+
+        def symbols_get(self):
+            return tuple(self.symbol_info(n) for n in self.symbols)
+
+        def symbol_select(self, name, enable):
+            self.select_calls.append((name, enable))
+            (self.selected.add if enable else self.selected.discard)(name)
+            return True
+
+    fake = HiddenFake()
+    specs = {s.symbol: s for s in discover(MT5Gateway(settings, module=fake))}
+    assert specs["GBPUSDm"].issues == [] and specs["GBPUSDm"].tick_value == 1.0
+    assert not specs["GBPUSDm"].visible  # still reported as outside Market Watch
+    assert any("trade_mode" in i for i in specs["DEADm"].issues)  # really disabled: stays flagged
+    assert fake.selected == set()  # Market Watch left as it was
+    assert ("GBPUSDm", True) in fake.select_calls and ("GBPUSDm", False) in fake.select_calls

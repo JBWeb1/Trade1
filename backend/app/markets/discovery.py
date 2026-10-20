@@ -202,7 +202,23 @@ def build_spec(info: dict, account_currency: str | None) -> InstrumentSpec:
     return spec
 
 
+REFRESHABLE = ("tick_value", "tick_size", "volume_min", "volume_step", "contract_size", "point")
+
+
 def discover(gateway) -> list[InstrumentSpec]:
+    """Build specs for every symbol. Symbols outside Market Watch often report blank
+    values (e.g. tick value 0) until selected, so those are re-read before flagging."""
     account = gateway.get_account_info()
     ccy = account.get("currency")
-    return [build_spec(info, ccy) for info in gateway.get_available_symbols()]
+    specs = []
+    for info in gateway.get_available_symbols():
+        spec = build_spec(info, ccy)
+        if spec.issues and not info.get("visible") and any(
+                i.split(" ")[0] in REFRESHABLE for i in spec.issues):
+            try:
+                spec = build_spec(gateway.peek_symbol_info(info["name"]), ccy)
+                spec.visible = False
+            except Exception as exc:  # keep the original flags; note why the re-read failed
+                spec.issues.append(f"could not re-read specification: {exc}")
+        specs.append(spec)
+    return specs

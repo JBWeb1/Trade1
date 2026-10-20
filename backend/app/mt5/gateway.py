@@ -186,6 +186,29 @@ class MT5Gateway:
             info = self._call("symbol_info", symbol) or info
         return _as_dict(info)
 
+    def peek_symbol_info(self, symbol: str, attempts: int = 4, wait_s: float = 0.25) -> dict:
+        """Full specification of a symbol that is NOT in Market Watch.
+
+        MT5 often reports tick value 0 (and other blanks) for symbols outside Market
+        Watch. Select it, give the terminal a moment to fill the values in, read it,
+        then remove it again so the user's Market Watch is left as it was."""
+        import time as _time
+        info = self._call("symbol_info", symbol)
+        if info is None:
+            raise MT5Error(f"symbol {symbol!r} not found at this broker")
+        if info.visible:
+            return _as_dict(info)
+        self._call("symbol_select", symbol, True)
+        try:
+            for _ in range(attempts):
+                fresh = self._call("symbol_info", symbol)
+                if fresh is not None and (fresh.trade_tick_value or 0) > 0:
+                    return _as_dict(fresh)
+                _time.sleep(wait_s)
+            return _as_dict(fresh or info)
+        finally:
+            self._call("symbol_select", symbol, False)
+
     def get_market_tick(self, symbol: str) -> dict | None:
         tick = self._call("symbol_info_tick", symbol)
         if tick is None:

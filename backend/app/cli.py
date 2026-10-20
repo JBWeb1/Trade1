@@ -82,6 +82,37 @@ def cmd_discover(gw: MT5Gateway, args) -> int:
     return 0
 
 
+def cmd_markets(_gw, args) -> int:
+    """Summarise discovered instruments, and why any are flagged."""
+    from collections import Counter
+
+    from sqlalchemy import select
+
+    from .models import Instrument
+    with session_scope() as s:
+        rows = s.scalars(select(Instrument)).all()
+        if not rows:
+            print("No instruments stored yet: run `discover` with MT5 open.")
+            return 0
+        flagged = [r for r in rows if not r.metadata_ok]
+        print(f"{len(rows)} instruments, {len(flagged)} flagged")
+        reasons = Counter()
+        for r in flagged:
+            for issue in r.issues:
+                reasons[issue.split(" (")[0].split(":")[0]] += 1
+        if reasons:
+            print("\nFlag reasons (count):")
+            for reason, n in reasons.most_common():
+                examples = [r.symbol for r in flagged if any(i.startswith(reason) for i in r.issues)][:6]
+                print(f"  {n:>4}  {reason}   e.g. {', '.join(examples)}")
+        if args.category:
+            print(f"\n{args.category}:")
+            for r in sorted(rows, key=lambda x: x.symbol):
+                if r.category == args.category:
+                    print(f"  {r.symbol:<16} {'OK' if r.metadata_ok else 'FLAGGED: ' + '; '.join(r.issues)}")
+    return 0
+
+
 def cmd_ingest(gw: MT5Gateway, args) -> int:
     with session_scope() as s:
         run = ingest_bars(s, gw, args.symbol, Timeframe(args.timeframe), _date(args.start), _date(args.end))
@@ -378,6 +409,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("mt5-check")
     sub.add_parser("discover")
+    mk = sub.add_parser("markets")
+    mk.add_argument("--category", default=None, help="also list one category, e.g. metals")
     p = sub.add_parser("ingest")
     p.add_argument("--symbol", required=True)
     p.add_argument("--timeframe", required=True, choices=[t.value for t in Timeframe])
@@ -442,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(settings.log_level, log_file="logs/trade1.log", console=False)
     _warn_about_synced_folders(settings)
     gw = MT5Gateway(settings)
-    handlers = {"mt5-check": cmd_mt5_check, "discover": cmd_discover, "ingest": cmd_ingest,
+    handlers = {"mt5-check": cmd_mt5_check, "discover": cmd_discover, "markets": cmd_markets, "ingest": cmd_ingest,
                 "coverage": cmd_coverage, "backtest": cmd_backtest, "validate": cmd_validate,
                 "multi-market": cmd_multi_market, "portfolio": cmd_portfolio, "tick-check": cmd_tick_check, "backup": cmd_backup, "demo-status": cmd_demo_status,
                 "demo-run": cmd_demo_run, "emergency-stop": cmd_emergency_stop, "reconcile": cmd_reconcile,

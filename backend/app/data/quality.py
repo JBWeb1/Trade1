@@ -141,8 +141,10 @@ def clean_and_check(df: pd.DataFrame, tf_minutes: int, requested_start: datetime
     late = df["time"].iloc[0] - pd.Timestamp(requested_start)
     rep.history_starts_late_by_days = round(late.total_seconds() / 86400, 2)
     if late > timedelta(days=4):
-        rep.notes.append("terminal history starts after the requested start "
-                         "(history limit or symbol listed later)")
+        rep.notes.append("terminal history starts after the requested start. MT5 may still be loading "
+                         "older history: open this symbol's chart in MT5, press Home to scroll back, set "
+                         "Tools > Options > Charts > 'Max bars in chart' to Unlimited, then download again "
+                         "(already-stored bars are skipped)")
 
     # stale: the request reaches 'now' but data stops well before it
     if pd.Timestamp(requested_end) >= pd.Timestamp(now) - timedelta(minutes=tf_minutes * 2):

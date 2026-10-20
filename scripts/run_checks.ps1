@@ -28,12 +28,15 @@ try {
 
     Write-Host "`n===== 2. Market discovery =====" -ForegroundColor Cyan
     Invoke-Trade1 discover
+    Invoke-Trade1 markets
 
     $symbol = Read-Host "`nSymbol to download (exact name as your MT5 Market Watch shows it, e.g. EURUSDm)"
-    Write-Host "`n===== 3. History: $symbol H1, 2024 =====" -ForegroundColor Cyan
-    Invoke-Trade1 ingest --symbol $symbol --timeframe H1 --start 2024-01-01 --end 2025-01-01
-    Write-Host "`n===== 4. History: $symbol M1, January 2025 =====" -ForegroundColor Cyan
-    Invoke-Trade1 ingest --symbol $symbol --timeframe M1 --start 2025-01-01 --end 2025-02-01
+    $today = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+    $m1start = (Get-Date).ToUniversalTime().AddDays(-20).ToString("yyyy-MM-dd")
+    Write-Host "`n===== 3. History: $symbol H1, 2023 to today =====" -ForegroundColor Cyan
+    Invoke-Trade1 ingest --symbol $symbol --timeframe H1 --start 2023-01-01 --end $today
+    Write-Host "`n===== 4. History: $symbol M1, last 20 days (MT5 keeps little M1 history) =====" -ForegroundColor Cyan
+    Invoke-Trade1 ingest --symbol $symbol --timeframe M1 --start $m1start --end $today
     Write-Host "`n===== 5. Stored coverage =====" -ForegroundColor Cyan
     Invoke-Trade1 coverage
 } finally {
