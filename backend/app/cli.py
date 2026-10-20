@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 
@@ -41,6 +42,12 @@ def _print(obj) -> None:
     print(json.dumps(obj, indent=2, default=str))
 
 
+def mask_login(login) -> str:
+    """Show only the last 3 digits of an account number in printed reports."""
+    s = str(login or "")
+    return ("*" * max(len(s) - 3, 0) + s[-3:]) if s else "-"
+
+
 def cmd_mt5_check(gw: MT5Gateway, _args) -> int:
     conn = gw.check_connection()
     print("Connection:")
@@ -52,10 +59,12 @@ def cmd_mt5_check(gw: MT5Gateway, _args) -> int:
     acct = gw.get_account_info()
     ver = gw.verify_demo_account()
     print("\nAccount:")
-    _print({k: acct.get(k) for k in ("login", "server", "company", "currency", "leverage",
-                                     "balance", "equity", "trade_mode")})
+    shown = {k: acct.get(k) for k in ("login", "server", "company", "currency", "leverage",
+                                      "balance", "equity", "trade_mode")}
+    shown["login"] = mask_login(shown["login"])
+    _print(shown)
     print("\nDemo verification:")
-    _print(ver.as_dict())
+    _print({**ver.as_dict(), "login": mask_login(ver.login)})
     offset = estimate_server_offset_hours(gw)
     cfg = gw.settings.mt5_server_utc_offset_hours
     print(f"\nServer clock offset: estimated {offset if offset is not None else 'unknown (markets closed)'}"
@@ -430,7 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, log_file="logs/trade1.log", console=False)
+    _warn_about_synced_folders(settings)
     gw = MT5Gateway(settings)
     handlers = {"mt5-check": cmd_mt5_check, "discover": cmd_discover, "ingest": cmd_ingest,
                 "coverage": cmd_coverage, "backtest": cmd_backtest, "validate": cmd_validate,
@@ -438,16 +448,52 @@ def main(argv: list[str] | None = None) -> int:
                 "demo-run": cmd_demo_run, "emergency-stop": cmd_emergency_stop, "reconcile": cmd_reconcile,
                 "daily-report": cmd_daily_report, "news-check": cmd_news_check,
                 "news-fetch": cmd_news_fetch, "news-import": cmd_news_import}
+    # Errors go to stdout on purpose: Windows PowerShell transcripts (the report files)
+    # do not capture stderr, and a silent failure is worse than a noisy one.
     try:
         return handlers[args.cmd](gw, args)
     except MT5Error as exc:
-        print(f"MT5 error: {exc}", file=sys.stderr)
+        print(f"MT5 ERROR: {exc}")
         return 3
     except (RuntimeError, ValueError, OSError) as exc:  # news disabled, bad feed, bad file, bad dates
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"ERROR: {exc}")
+        return 1
+    except Exception as exc:
+        import traceback
+        print(f"ERROR ({type(exc).__name__}): {exc}")
+        hint = _hint_for(exc)
+        if hint:
+            print(f"WHAT TO DO: {hint}")
+        print("Details (send these to Claude):")
+        print("".join(traceback.format_exception(exc)[-6:]))
+        logging.getLogger("cli").exception("command %s failed", args.cmd)
         return 1
     finally:
         gw.shutdown_terminal()
+
+
+def _warn_about_synced_folders(settings) -> None:
+    """SQLite files inside OneDrive/Dropbox get locked or rolled back while syncing."""
+    from pathlib import Path
+    if not settings.database_url.startswith("sqlite"):
+        return
+    here = str(Path.cwd().resolve()).lower()
+    if any(x in here for x in ("onedrive", "dropbox", "google drive", "icloud")):
+        print("WARNING: Trade1 is inside a cloud-synced folder (" + str(Path.cwd()) + ").\n"
+              "         Sync locks the database file and can corrupt it. Move the Trade1 folder to\n"
+              "         C:\\Trade1 and run scripts\\setup_windows.bat there.\n")
+
+
+def _hint_for(exc: Exception) -> str | None:
+    text = str(exc).lower()
+    if "database is locked" in text or "disk i/o error" in text or "unable to open database" in text:
+        return ("the database file is locked or unreachable. If Trade1 is inside OneDrive, move it to "
+                "C:\\Trade1; close other Trade1 windows; then retry.")
+    if "no such table" in text:
+        return "the database tables are missing: run scripts\\setup_windows.bat (it creates them)."
+    if "readonly" in text or "read-only" in text:
+        return "the database file is read-only: check the folder permissions or move Trade1 to C:\\Trade1."
+    return None
 
 
 if __name__ == "__main__":

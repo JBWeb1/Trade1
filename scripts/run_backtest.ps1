@@ -6,6 +6,14 @@ $Py = Join-Path $Backend ".venv\Scripts\python.exe"
 $Stamp = Get-Date -Format "yyyyMMdd_HHmm"
 $Report = Join-Path $Root "trade1_backtest_$Stamp.txt"
 
+$env:PYTHONUTF8 = "1"   # UTF-8 output even when piped into this report
+# Run a Trade1 command and merge its error output into the transcript (Windows PowerShell 5.1
+# transcripts do not record stderr, which made failures invisible in the report).
+function Invoke-Trade1 { & $Py -m app.cli @args 2>&1 | ForEach-Object { "$_" } }
+if ($Root -match "OneDrive|Dropbox|Google Drive") {
+    Write-Host "WARNING: Trade1 is inside a cloud-synced folder ($Root)." -ForegroundColor Yellow
+    Write-Host "Sync locks Trade1's database file. Move the whole folder to C:\Trade1 and run setup there." -ForegroundColor Yellow
+}
 if (-not (Test-Path $Py)) { Write-Host "Run scripts\setup_windows.bat first." -ForegroundColor Red; Read-Host "Press Enter"; exit 1 }
 if (-not (Get-Process terminal64 -ErrorAction SilentlyContinue)) {
     Write-Host "MetaTrader 5 does not seem to be running. Open it and log in to the demo account." -ForegroundColor Yellow
@@ -35,25 +43,25 @@ Start-Transcript -Path $Report -Force | Out-Null
 Push-Location $Backend
 try {
     Write-Host "`n===== Demo verification =====" -ForegroundColor Cyan
-    & $Py -m app.cli mt5-check
+    Invoke-Trade1 mt5-check
     if ($LASTEXITCODE -ne 0) { Write-Host "Account not verified as demo - stopping." -ForegroundColor Red; return }
 
     Write-Host "`n===== Refreshing instrument specifications =====" -ForegroundColor Cyan
-    & $Py -m app.cli discover | Out-Null
+    Invoke-Trade1 discover
 
     Write-Host "`n===== Downloading $symbol $tf and $htf ($start -> $end) =====" -ForegroundColor Cyan
-    & $Py -m app.cli ingest --symbol $symbol --timeframe $tf --start $start --end $end
+    Invoke-Trade1 ingest --symbol $symbol --timeframe $tf --start $start --end $end
     if ($htf -ne $tf) {
         $htfStart = (Get-Date $start).AddDays(-60).ToString("yyyy-MM-dd")  # indicator warm-up
-        & $Py -m app.cli ingest --symbol $symbol --timeframe $htf --start $htfStart --end $end
+        Invoke-Trade1 ingest --symbol $symbol --timeframe $htf --start $htfStart --end $end
     }
 
     foreach ($strategy in @("trend_continuation", "range_breakout", "liquidity_sweep")) {
         Write-Host "`n===== Backtest: $strategy =====" -ForegroundColor Cyan
-        & $Py -m app.cli backtest --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
+        Invoke-Trade1 backtest --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
             --strategy $strategy --balance $balance --commission $commission --risk 0.25
         Write-Host "`n===== Validation: $strategy (takes up to a few minutes) =====" -ForegroundColor Cyan
-        & $Py -m app.cli validate --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
+        Invoke-Trade1 validate --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
             --strategy $strategy --balance $balance --commission $commission --risk 0.25
     }
 } finally {

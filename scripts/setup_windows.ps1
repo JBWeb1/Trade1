@@ -9,6 +9,13 @@ $Py = Join-Path $Venv "Scripts\python.exe"
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Fail($msg) { Write-Host "`nSETUP STOPPED: $msg" -ForegroundColor Red; Read-Host "Press Enter to close"; exit 1 }
 
+if ($Root -match "OneDrive|Dropbox|Google Drive") {
+    Write-Host "`nWARNING: this folder is synced by OneDrive/Dropbox: $Root" -ForegroundColor Yellow
+    Write-Host "Syncing locks and can corrupt Trade1's database. Recommended: move the whole folder to C:\Trade1 first." -ForegroundColor Yellow
+    $ans = Read-Host "Continue here anyway? (y/n)"
+    if ($ans -ne "y") { Write-Host "Move the folder to C:\Trade1 and run setup_windows.bat from there."; Read-Host "Press Enter to close"; exit 1 }
+}
+
 Step "Looking for 64-bit Python 3.12 or 3.13"
 $pyver = $null
 if (Get-Command py -ErrorAction SilentlyContinue) { foreach ($v in @("3.12", "3.13")) {

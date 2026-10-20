@@ -51,9 +51,17 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def configure_logging(level: str = "INFO") -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
+def configure_logging(level: str = "INFO", log_file: str | None = None, console: bool = True) -> None:
+    """JSON logs to stderr (API) and/or a file (CLI, so command output stays readable)."""
+    handlers: list[logging.Handler] = []
+    if console:
+        handlers.append(logging.StreamHandler())
+    if log_file:
+        from pathlib import Path
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    for h in handlers:
+        h.setFormatter(JsonFormatter())
     root = logging.getLogger()
-    root.handlers[:] = [handler]
+    root.handlers[:] = handlers
     root.setLevel(level.upper())
