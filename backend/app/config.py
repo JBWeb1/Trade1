@@ -52,6 +52,20 @@ class Settings(BaseSettings):
     news_impacts: tuple[str, ...] = ("high",)
     news_categories: tuple[str, ...] = ("forex", "metals", "energy", "indices")
 
+    # Demo execution limits (engineering defaults for testing, not proven optimal values)
+    demo_magic: int = 770011                      # tags Trade1's orders; other trades are never touched
+    demo_risk_per_trade_pct: float = Field(default=0.25, gt=0, le=2)
+    demo_max_daily_loss_pct: float = Field(default=1.0, gt=0, le=10)
+    demo_max_drawdown_pct: float = Field(default=10.0, gt=0, le=50)
+    demo_max_open_positions: int = Field(default=3, ge=1, le=20)
+    demo_max_spread_multiple: float = Field(default=3.0, ge=1, le=20)  # vs spread seen at discovery
+    demo_max_slippage_points: int = Field(default=30, ge=0, le=10_000)
+    demo_max_tick_age_seconds: int = Field(default=60, ge=5, le=3600)
+
+    # Optional Telegram alerts (both must be set)
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: str | None = None
+
     @field_validator("mt5_login", mode="before")
     @classmethod
     def _empty_login(cls, v):

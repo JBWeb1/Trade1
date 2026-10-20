@@ -27,8 +27,8 @@ from ..integrations.news.filter import NewsBlackout
 from ..integrations.news.service import NewsDisabled, RefreshTooSoon, refresh_from_feed
 from ..integrations.news.store import coverage as news_coverage, load_events
 from ..markets.service import sync_instruments
-from ..models import (AuditLog, BacktestRun, BacktestTrade, IngestionRun, Instrument, ResearchReport,
-                      StrategyVersion, ValidationReport)
+from ..models import (AuditLog, BacktestRun, BacktestTrade, IngestionRun, Instrument, OrderIntent,
+                      ReconciliationEvent, ResearchReport, StrategyVersion, ValidationReport, utcnow)
 from ..mt5.constants import Timeframe
 from ..mt5.gateway import MT5Error, MT5Gateway
 from .deps import get_gateway, require_token
@@ -590,3 +590,123 @@ def settings_view(_: Auth, settings: Settings = Depends(get_settings)) -> dict:
                  "impacts": list(settings.news_impacts), "categories": list(settings.news_categories)},
         "how_to_change": "edit backend\\.env and restart the backend (start_trade1.bat)",
     }
+
+
+# ---------------------------------------------------------------- demo execution (Phase E)
+# None of these routes accepts order details: orders only come from the runner's
+# strategy signals, through the demo execution gateway and its checks.
+
+def _intent_dict(i: OrderIntent) -> dict:
+    return {k: getattr(i, k) for k in ("id", "created_at", "kind", "symbol", "side", "volume", "stop_loss",
+                                       "take_profit", "requested_price", "fill_price", "slippage_points",
+                                       "position_ticket", "status", "reason", "idempotency_key", "checks")}
+
+
+@app.get("/api/demo/status")
+def demo_status(_: Auth, db: DB, gw: GW, settings: Settings = Depends(get_settings)) -> dict:
+    from ..execution import state
+    from ..execution.control import CONFIRMATION, gate_requirements
+    st = state.demo_state(db)
+    report = db.get(ValidationReport, st["report_id"]) if st.get("report_id") else None
+    passed = db.scalars(select(ValidationReport).where(ValidationReport.verdict == "PASSED",
+                                                       ValidationReport.oos_prior_uses == 0)
+                        .order_by(ValidationReport.id.desc())).all()
+    try:
+        positions = [p for p in gw.get_open_positions() if p.get("magic") == settings.demo_magic]
+    except MT5Error as exc:
+        positions = []
+        st["positions_error"] = str(exc)
+    events = db.scalars(select(ReconciliationEvent).order_by(ReconciliationEvent.id.desc()).limit(50)).all()
+    intents = db.scalars(select(OrderIntent).order_by(OrderIntent.id.desc()).limit(50)).all()
+    return {
+        "execution_mode": settings.execution_mode.value,
+        "state": {k: v for k, v in st.items() if k != "params"},
+        "emergency_stop": state.get(db, state.EMERGENCY),
+        "requirements": gate_requirements(db, settings, gw, report or (passed[0] if passed else None)),
+        "passed_reports": [{"id": r.id, "symbol": r.symbol, "timeframe": r.timeframe, "created_at": r.created_at,
+                            "strategy_version_id": r.strategy_version_id} for r in passed],
+        "confirmation_text": CONFIRMATION,
+        "positions": [{k: p.get(k) for k in ("ticket", "symbol", "type", "volume", "price_open", "sl", "tp",
+                                             "profit", "swap", "comment")} for p in positions],
+        "orders": [_intent_dict(i) for i in intents],
+        "reconciliation": [{"id": e.id, "created_at": e.created_at, "kind": e.kind, "details": e.details,
+                            "resolved": e.resolved, "resolution": e.resolution} for e in events],
+        "limits": {k: getattr(settings, k) for k in (
+            "demo_risk_per_trade_pct", "demo_max_daily_loss_pct", "demo_max_drawdown_pct", "demo_max_open_positions",
+            "demo_max_spread_multiple", "demo_max_slippage_points", "demo_max_tick_age_seconds")},
+    }
+
+
+class DemoEnableRequest(BaseModel):
+    report_id: int = Field(ge=1)
+    confirmation: str = Field(max_length=200)
+
+
+@app.post("/api/demo/enable")
+def demo_enable(req: DemoEnableRequest, actor: Auth, db: DB, gw: GW,
+                settings: Settings = Depends(get_settings)) -> dict:
+    from ..execution.control import enable_demo
+    res = enable_demo(db, settings, gw, report_id=req.report_id, confirmation=req.confirmation, actor=actor)
+    if not res["enabled"]:
+        db.commit()  # keep the audit record of the refusal
+        raise HTTPException(409, {"message": "demo trading NOT enabled: requirements failed",
+                                  "requirements": res["requirements"]})
+    return res
+
+
+@app.post("/api/demo/disable")
+def demo_disable(actor: Auth, db: DB) -> dict:
+    from ..execution.control import disable_demo
+    return disable_demo(db, actor)
+
+
+class EmergencyRequest(BaseModel):
+    reason: str = Field("manual emergency stop", max_length=300)
+
+
+@app.post("/api/system/emergency-stop")
+def emergency_stop(actor: Auth, db: DB, gw: GW, req: EmergencyRequest | None = None,
+                   settings: Settings = Depends(get_settings)) -> dict:
+    """Always allowed. Disables new entries first, then cancels Trade1's pending demo orders."""
+    from ..execution.control import disable_demo
+    from ..execution.gateway import DemoExecutionGateway
+    disable_demo(db, actor, "emergency stop")
+    return DemoExecutionGateway(settings, gw).emergency_stop(db, (req or EmergencyRequest()).reason, actor)
+
+
+class ResetRequest(BaseModel):
+    confirmation: str = Field(max_length=200)
+
+
+@app.post("/api/system/emergency-reset")
+def emergency_reset(req: ResetRequest, actor: Auth, db: DB) -> dict:
+    from ..execution import state
+    if req.confirmation != "RESET EMERGENCY STOP":
+        raise HTTPException(422, 'type exactly: "RESET EMERGENCY STOP"')
+    state.set_emergency(db, False, "reset by user", actor)
+    db.add(AuditLog(actor=actor, action="system.emergency_reset", details={}))
+    return {"active": False, "note": "demo trading stays disabled until you enable it again"}
+
+
+@app.post("/api/demo/reconcile")
+def demo_reconcile(_: Auth, db: DB, gw: GW, settings: Settings = Depends(get_settings)) -> dict:
+    from ..execution.gateway import DemoExecutionGateway
+    try:
+        return DemoExecutionGateway(settings, gw).reconcile(db)
+    except MT5Error as exc:
+        raise _mt5_unavailable(exc)
+
+
+class ResolveRequest(BaseModel):
+    resolution: str = Field(min_length=10, max_length=1000)
+
+
+@app.post("/api/demo/reconciliation/{event_id}/resolve")
+def demo_resolve(event_id: int, req: ResolveRequest, actor: Auth, db: DB) -> dict:
+    ev = db.get(ReconciliationEvent, event_id)
+    if ev is None:
+        raise HTTPException(404, "event not found")
+    ev.resolved, ev.resolved_at, ev.resolution = True, utcnow(), f"{actor}: {req.resolution}"
+    db.add(AuditLog(actor=actor, action="reconciliation.resolved", details={"event_id": event_id,
+                                                                           "resolution": req.resolution}))
+    return {"id": ev.id, "resolved": True}

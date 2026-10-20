@@ -126,6 +126,21 @@ class SpecError(ValueError):
     pass
 
 
+def size_position(spec: dict, entry: float, stop: float, equity: float, risk_pct: float,
+                  commission_per_lot_side: float = 0.0) -> float:
+    """Lots so that hitting the stop (plus round-trip commission) loses ~risk_pct of equity.
+    Rounded DOWN to the volume step. Returns 0 if even the minimum volume risks too much:
+    the risk budget is never widened to make a trade possible. Shared by backtests and demo."""
+    per_lot = abs(entry - stop) / spec["tick_size"] * spec["tick_value"] + 2 * commission_per_lot_side
+    if per_lot <= 0 or equity <= 0:
+        return 0.0
+    steps = math.floor(equity * risk_pct / 100 / per_lot / spec["volume_step"] + 1e-9)
+    vol = round(steps * spec["volume_step"], 8)
+    if vol < spec["volume_min"]:
+        return 0.0
+    return min(vol, spec["volume_max"])
+
+
 def _spec_values(spec: dict) -> dict:
     need = ("point", "tick_size", "tick_value", "volume_min", "volume_max", "volume_step")
     missing = [k for k in need if not spec.get(k) or spec[k] <= 0]
@@ -151,16 +166,8 @@ class BacktestEngine:
         return price_diff / self.spec["tick_size"] * self.spec["tick_value"] * volume
 
     def _size(self, entry: float, stop: float, equity: float) -> float:
-        sp = self.spec
-        risk_money = equity * self.cfg.risk.risk_per_trade_pct / 100
-        per_lot = self._money(abs(entry - stop), 1.0) + 2 * self.cfg.costs.commission_per_lot_per_side
-        if per_lot <= 0:
-            return 0.0
-        steps = math.floor(risk_money / per_lot / sp["volume_step"] + 1e-9)
-        vol = round(steps * sp["volume_step"], 8)
-        if vol < sp["volume_min"]:
-            return 0.0
-        return min(vol, sp["volume_max"])
+        return size_position(self.spec, entry, stop, equity, self.cfg.risk.risk_per_trade_pct,
+                             self.cfg.costs.commission_per_lot_per_side)
 
     def _margin(self, price: float, volume: float) -> float:
         return self._money(price, volume) / self.cfg.leverage

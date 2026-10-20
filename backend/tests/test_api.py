@@ -101,6 +101,9 @@ REVIEWED_WRITE_ROUTES = {
     ("POST", "/api/strategies"), ("POST", "/api/backtests"), ("POST", "/api/validation/{backtest_id}"),
     ("POST", "/api/research/multi-market"), ("POST", "/api/research/portfolio"),
     ("POST", "/api/research/tick-check/{backtest_id}"),
+    ("POST", "/api/demo/enable"), ("POST", "/api/demo/disable"), ("POST", "/api/demo/reconcile"),
+    ("POST", "/api/demo/reconciliation/{event_id}/resolve"), ("POST", "/api/system/emergency-stop"),
+    ("POST", "/api/system/emergency-reset"),
 }
 
 
@@ -114,9 +117,40 @@ def test_no_route_can_send_orders():
     assert writes == REVIEWED_WRITE_ROUTES
 
 
-def test_application_code_never_calls_order_send():
-    """Until the Phase E demo gateway exists, no module may reference order_send."""
+def test_only_the_demo_execution_gateway_calls_order_send():
+    """order_send may appear in exactly one module: app/execution/gateway.py."""
     import pathlib
     root = pathlib.Path(api.__file__).resolve().parents[1]
-    offenders = [str(p) for p in root.rglob("*.py") if "order_send" in p.read_text()]
-    assert offenders == []
+    offenders = sorted(str(p.relative_to(root)) for p in root.rglob("*.py") if "order_send" in p.read_text())
+    assert offenders == ["execution/gateway.py"]
+
+
+def test_no_route_accepts_order_details():
+    """No request model on any route (including nested models) can carry an arbitrary order."""
+    from pydantic import BaseModel
+    order_fields = {"volume", "lots", "side", "price", "stop_loss", "take_profit", "sl", "tp", "order_type",
+                    "ticket", "position"}
+
+    def fields_of(model, seen):
+        if model in seen:
+            return set()
+        seen.add(model)
+        out = set(model.model_fields)
+        for f in model.model_fields.values():
+            ann = f.annotation
+            for t in (ann, *getattr(ann, "__args__", ())):
+                if isinstance(t, type) and issubclass(t, BaseModel):
+                    out |= fields_of(t, seen)
+        return out
+
+    checked = 0
+    for route in api.app.routes:
+        dep = getattr(route, "dependant", None)
+        for bp in getattr(dep, "body_params", []):
+            ann = bp.field_info.annotation
+            for t in (ann, *getattr(ann, "__args__", ())):
+                if isinstance(t, type) and issubclass(t, BaseModel):
+                    checked += 1
+                    bad = fields_of(t, set()) & order_fields
+                    assert not bad, (route.path, bad)
+    assert checked >= 8, f"only {checked} request models inspected - test is not seeing the routes"

@@ -18,10 +18,16 @@ const ALLOWED_POST: RegExp[] = [
   /^research\/multi-market$/,
   /^research\/portfolio$/,
   /^research\/tick-check\/\d+$/,
+  /^demo\/enable$/,
+  /^demo\/disable$/,
+  /^demo\/reconcile$/,
+  /^demo\/reconciliation\/\d+\/resolve$/,
+  /^system\/emergency-stop$/,
+  /^system\/emergency-reset$/,
 ];
 const ALLOWED_GET_PREFIXES = [
   "health", "mt5/status", "markets", "market-data", "backtests", "validation", "strategies",
-  "news/events", "news/blackout", "diagnostics", "research", "audit", "settings",
+  "news/events", "news/blackout", "diagnostics", "research", "audit", "settings", "demo/status",
 ];
 
 function sameOrigin(req: NextRequest): boolean {

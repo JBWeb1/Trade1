@@ -11,7 +11,12 @@ export async function proxyPost<T = unknown>(path: string, body?: unknown): Prom
   let data: unknown = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
-    const detail = (data as { detail?: unknown })?.detail;
+    const detail = (data as { detail?: unknown })?.detail as
+      string | { message?: string; requirements?: { requirement: string; passed: boolean; detail: string }[] } | undefined;
+    if (detail && typeof detail === "object" && detail.requirements) {
+      const failed = detail.requirements.filter((r) => !r.passed).map((r) => `✗ ${r.requirement}${r.detail ? ` — ${r.detail}` : ""}`);
+      throw new Error([detail.message ?? "refused", ...failed].join("\n"));
+    }
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail ?? data));
   }
   return data as T;

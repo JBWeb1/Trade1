@@ -96,12 +96,17 @@ Verified with a production build and Chromium screenshots at desktop and phone w
 Not yet: an audit-log viewer, a settings editor, and a standalone multi-timeframe analysis page
 (the market page switches timeframes).
 
-## Phase E — Demo-only execution
+## Phase E — Demo-only execution (built)
 
-A demo execution gateway, the only module allowed to call `order_send`. It re-verifies the demo
-account on **every** order, runs the validation gate, risk checks, idempotency keys, reconciliation
-before any retry, and an emergency stop. The safety test that currently forbids `order_send`
-everywhere becomes "only in the demo gateway, and only after verification".
+`app/execution/gateway.py` is the only module that calls `order_send` (enforced by a test). It runs
+pre-flight checks on every order, checks the account inside the lock right before sending, uses
+idempotency keys, verifies fills against MT5 positions, marks unknown outcomes as uncertain (no
+retry, entries blocked), and has reconciliation and an emergency stop. Also built: the enable gate
+(`app/execution/control.py`), the runner (`runner.py`), the daily report (`report.py`), Telegram
+alerts and the VPS guide. 30 execution tests run on a simulated MT5, including live-account refusal,
+an account switch at send time, lost replies, broker rejections and missing SL/TP.
+**Not yet verified against a real Exness terminal.** The first demo run on your PC is the real test:
+watch it closely.
 
 ## Phase F — Final verification
 

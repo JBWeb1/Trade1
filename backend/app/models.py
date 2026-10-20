@@ -223,3 +223,47 @@ class ResearchReport(Base):
     params: Mapped[dict] = mapped_column(JsonType, default=dict)
     result: Mapped[dict] = mapped_column(JsonType, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class OrderIntent(Base):
+    """One intended demo order. The idempotency key makes a signal produce at most one order."""
+
+    __tablename__ = "order_intents"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
+    kind: Mapped[str] = mapped_column(String(8), default="open")  # open | close
+    symbol: Mapped[str] = mapped_column(String(64), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    volume: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float | None] = mapped_column(Float)
+    take_profit: Mapped[float | None] = mapped_column(Float)
+    requested_price: Mapped[float | None] = mapped_column(Float)
+    position_ticket: Mapped[int | None] = mapped_column(BigInteger)  # for closes / filled opens
+    # pending | rejected | filled | failed | uncertain | reconciled_filled | reconciled_not_filled
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    strategy_version_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_versions.id"))
+    signal: Mapped[dict] = mapped_column(JsonType, default=dict)
+    checks: Mapped[list] = mapped_column(JsonType, default=list)
+    account: Mapped[dict] = mapped_column(JsonType, default=dict)
+    request: Mapped[dict] = mapped_column(JsonType, default=dict)
+    response: Mapped[dict] = mapped_column(JsonType, default=dict)
+    fill_price: Mapped[float | None] = mapped_column(Float)
+    slippage_points: Mapped[float | None] = mapped_column(Float)
+
+
+class ReconciliationEvent(Base):
+    """Something about order or position state that a human must look at.
+    Any unresolved event blocks new demo entries."""
+
+    __tablename__ = "reconciliation_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(48))
+    order_intent_id: Mapped[int | None] = mapped_column(ForeignKey("order_intents.id"))
+    details: Mapped[dict] = mapped_column(JsonType, default=dict)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolution: Mapped[str | None] = mapped_column(Text)

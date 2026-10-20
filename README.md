@@ -3,8 +3,9 @@
 A research-first algorithmic trading platform for an **Exness MetaTrader 5 demo account**:
 historical data → backtesting → out-of-sample validation → (later) demo-only automation.
 
-> **Status: data foundation (B), backtesting + validation (C) and the dashboard (D) are done.**
-> Demo-only execution (Phase E) is next, and unlocks only after a strategy passes validation on real data.
+> **Status: phases B–E are built**: data, backtesting and validation, the dashboard, and demo-only
+> execution. Demo trading stays locked until a strategy PASSES validation on your real data and the
+> terminal account is verified DEMO. **There is no live trading in this release.**
 > **Live trading does not exist in this release**, and no code path can send a broker order.
 > See [docs/PLAN.md](docs/PLAN.md) for the phase plan.
 
@@ -28,7 +29,8 @@ historical data → backtesting → out-of-sample validation → (later) demo-on
 | Metrics, stored runs and trades, reproducible strategy versions | ✅ |
 | Diagnostics, optional Forex Factory news blackout | ✅ |
 | Dashboard (Next.js): overview, markets + price charts, data quality, strategies, backtests with equity/drawdown/trade journal, validation reports, news, system health, demo gate | ✅ |
-| Demo-only execution, forward testing, VPS monitoring and alerts | ⏳ next phases |
+| Demo-only execution: gated enable, per-order safety checks, idempotent orders, reconciliation, emergency stop | ✅ (tested with a simulated MT5; first real run is yours) |
+| Forward-test runner, daily report vs validation, Telegram alerts, VPS guide | ✅ |
 
 ## Getting started on your PC (about 5 minutes)
 
@@ -235,6 +237,36 @@ All of these are also on the dashboard's **Research studies** page. Backtests ac
   `uninstall_autostart.bat` removes them. Set MT5 to start with Windows too.
 * Manual backup: `python -m app.cli backup`.
 * Trade journal: on a backtest page, **Export journal (CSV)**, or `GET /api/backtests/{id}/journal?format=csv|json`.
+
+## Demo trading (forward testing)
+
+Demo trading is locked by default. To unlock it, **all** of these must hold, and they are checked on the server:
+
+1. A strategy has a **PASSED** validation report whose out-of-sample data was used only once, including
+   the cost stress and walk-forward checks.
+2. `TRADE1_EXECUTION_MODE=DEMO` in `backend\.env`. Only the server sets this; the browser cannot.
+3. MT5 is connected and the terminal reports a **DEMO** account. Trade1 remembers this login and server.
+4. The instrument's specification is valid, risk limits are set, there are no open reconciliation
+   issues, and the emergency stop is off.
+5. You select the report on **Demo automation** and type the confirmation sentence.
+
+Then start `scripts\run_demo.bat`. On every newly closed bar it runs the same strategy code as the
+backtest. Every order goes through the **demo execution gateway**, the only code in Trade1 that may
+call MT5's `order_send`. A test enforces this. For every order it:
+
+* re-checks everything above, plus a fresh quote, spread, stops level, volume, open positions,
+  daily loss, drawdown and free margin;
+* re-reads the account's trade mode inside the MT5 lock right before sending. Anything but DEMO, or a
+  different account, is refused and triggers the emergency stop;
+* uses an idempotency key (strategy, symbol, bar, side), so a signal can never produce two orders;
+* records "filled" only after finding the position in MT5 with its stop-loss and take-profit. No reply, a
+  timeout or a missing position means **uncertain**: no retry, and new entries are blocked until
+  reconciliation (automatic when MT5's state is unambiguous, otherwise you resolve it with a note).
+
+The **EMERGENCY STOP** button (dashboard, or `python -m app.cli emergency-stop`) disables entries first,
+then cancels Trade1's pending demo orders. Open positions keep their broker-side stop-loss and take-profit.
+`daily-report` compares demo results with what validation predicted. See [docs/VPS.md](docs/VPS.md)
+for running 24/5 and Telegram alerts.
 
 ## Optional: Forex Factory economic calendar
 

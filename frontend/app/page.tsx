@@ -20,6 +20,9 @@ export default async function Overview() {
     tryApi<{ items: BacktestSummary[] }>("/api/backtests?limit=8"),
     tryApi<{ items: ValidationSummary[] }>("/api/validation?limit=8"),
   ]);
+  const demo = await tryApi<{ state: { enabled?: boolean; symbol?: string; timeframe?: string };
+    emergency_stop: { active?: boolean }; positions: unknown[]; orders: { created_at: string }[];
+    reconciliation: { resolved: boolean }[] }>("/api/demo/status");
 
   if (health.error) {
     return (
@@ -107,10 +110,18 @@ export default async function Overview() {
       </div>
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <Card title="Demo positions and daily P/L">
-          <EmptyState title="Demo execution is not built yet">
-            No demo orders exist. The demo order module (Phase E) unlocks only after a strategy passes validation on real data.
-          </EmptyState>
+        <Card title="Demo trading" right={<TextLink href="/demo">Demo automation</TextLink>}>
+          {demo.error ? <ErrorBox error={demo.error} /> : (
+            <div className="space-y-2 text-sm">
+              <div>{demo.data?.emergency_stop?.active ? <Badge tone="bad">EMERGENCY STOP ACTIVE</Badge>
+                : demo.data?.state?.enabled ? <Badge tone="good">ON: {demo.data.state.symbol} {demo.data.state.timeframe}</Badge>
+                : <Badge tone="neutral">OFF</Badge>}</div>
+              <p className="text-dim">{demo.data?.positions?.length ?? 0} open demo position(s) ·{" "}
+                {demo.data?.orders?.filter((o) => o.created_at.slice(0, 10) === new Date().toISOString().slice(0, 10)).length ?? 0} order intent(s) today ·{" "}
+                {demo.data?.reconciliation?.filter((e) => !e.resolved).length ?? 0} open reconciliation issue(s)</p>
+              <p className="text-xs text-faint">Unlocks only after a strategy PASSES validation on real data and the account is verified DEMO.</p>
+            </div>
+          )}
         </Card>
         <Card title="Account checks">
           {v && (v.reasons.length || v.warnings.length) ? (

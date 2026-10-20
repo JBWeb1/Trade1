@@ -9,6 +9,8 @@
     python -m app.cli multi-market --symbols XAUUSDm,EURUSDm,GBPUSDm --timeframe H1 --htf H4 --start ... --end ...
     python -m app.cli portfolio --legs legs.json --start 2024-01-01 --end 2025-01-01
     python -m app.cli tick-check --backtest-id 12
+    python -m app.cli demo-status | demo-run | reconcile | daily-report
+    python -m app.cli emergency-stop --reason "..."
     python -m app.cli news-check            # fetch + validate the configured news feed (no save)
     python -m app.cli news-fetch            # fetch and store
     python -m app.cli news-import --file ff_calendar_thisweek.json
@@ -263,6 +265,68 @@ def cmd_backup(_gw, args) -> int:
     return 0
 
 
+def cmd_demo_status(gw, _args) -> int:
+    from .execution import state
+    from .execution.control import gate_requirements
+    from .models import ValidationReport
+    settings = get_settings()
+    with session_scope() as s:
+        st = state.demo_state(s)
+        rep = s.get(ValidationReport, st["report_id"]) if st.get("report_id") else None
+        print(f"Execution mode: {settings.execution_mode.value}   demo enabled: {bool(st.get('enabled'))}   "
+              f"emergency stop: {state.emergency_active(s)}   open reconciliation: {state.unresolved_reconciliation(s)}")
+        if st.get("enabled"):
+            print(f"Trading {st['strategy']} [{st.get('params_hash')}] on {st['symbol']} {st['timeframe']} "
+                  f"for account {st['login']}@{st['server']}; last cycle: {st.get('last_cycle')}")
+        print("\nRequirements:")
+        for r in gate_requirements(s, settings, gw, rep):
+            print(f"  [{'PASS' if r['passed'] else 'FAIL'}] {r['requirement']}  {r['detail']}")
+    return 0
+
+
+def cmd_demo_run(gw, args) -> int:
+    from .execution.runner import run_forever
+    settings = get_settings()
+    print("Demo runner started. Ctrl+C to stop. Orders only go out when every gate check passes; "
+          "see `demo-status`.")
+    try:
+        run_forever(settings, gw, session_scope, interval_seconds=args.interval)
+    except KeyboardInterrupt:
+        print("Stopped.")
+    return 0
+
+
+def cmd_emergency_stop(gw, args) -> int:
+    from .execution.control import disable_demo
+    from .execution.gateway import DemoExecutionGateway
+    with session_scope() as s:
+        disable_demo(s, "cli", "emergency stop")
+        _print(DemoExecutionGateway(get_settings(), gw).emergency_stop(s, args.reason, "cli"))
+    return 0
+
+
+def cmd_reconcile(gw, _args) -> int:
+    from .execution.gateway import DemoExecutionGateway
+    with session_scope() as s:
+        _print(DemoExecutionGateway(get_settings(), gw).reconcile(s))
+    return 0
+
+
+def cmd_daily_report(gw, _args) -> int:
+    from .alerts import notify
+    from .execution import state
+    from .execution.report import build_daily_report, format_report
+    settings = get_settings()
+    with session_scope() as s:
+        if not state.demo_state(s).get("enabled_at"):
+            print("Demo trading has never been enabled; nothing to report.")
+            return 0
+        text = format_report(build_daily_report(s, settings, gw))
+    print(text)
+    notify(settings, text, "info")
+    return 0
+
+
 def cmd_news_check(_gw, _args) -> int:
     from .integrations.news import forexfactory
     url = get_settings().news_feed_url
@@ -352,6 +416,13 @@ def main(argv: list[str] | None = None) -> int:
     bk = sub.add_parser("backup")
     bk.add_argument("--dest", default="backups")
     bk.add_argument("--keep", type=int, default=14)
+    sub.add_parser("demo-status")
+    dr = sub.add_parser("demo-run")
+    dr.add_argument("--interval", type=int, default=20, help="seconds between cycles")
+    es = sub.add_parser("emergency-stop")
+    es.add_argument("--reason", default="manual emergency stop (CLI)")
+    sub.add_parser("reconcile")
+    sub.add_parser("daily-report")
     sub.add_parser("news-check")
     sub.add_parser("news-fetch")
     p = sub.add_parser("news-import")
@@ -363,7 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     gw = MT5Gateway(settings)
     handlers = {"mt5-check": cmd_mt5_check, "discover": cmd_discover, "ingest": cmd_ingest,
                 "coverage": cmd_coverage, "backtest": cmd_backtest, "validate": cmd_validate,
-                "multi-market": cmd_multi_market, "portfolio": cmd_portfolio, "tick-check": cmd_tick_check, "backup": cmd_backup, "news-check": cmd_news_check,
+                "multi-market": cmd_multi_market, "portfolio": cmd_portfolio, "tick-check": cmd_tick_check, "backup": cmd_backup, "demo-status": cmd_demo_status,
+                "demo-run": cmd_demo_run, "emergency-stop": cmd_emergency_stop, "reconcile": cmd_reconcile,
+                "daily-report": cmd_daily_report, "news-check": cmd_news_check,
                 "news-fetch": cmd_news_fetch, "news-import": cmd_news_import}
     try:
         return handlers[args.cmd](gw, args)
