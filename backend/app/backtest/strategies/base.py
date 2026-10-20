@@ -13,7 +13,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar
 
 import pandas as pd
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 @dataclass
@@ -41,18 +43,47 @@ class StrategyParams(BaseModel):
     model_config = {"extra": "forbid", "frozen": True}
 
 
+class RegimeParams(StrategyParams):
+    """Shared regime-filter settings (see app.backtest.regime)."""
+    regime_filter: Literal["any", "trending", "ranging"] = "any"
+    avoid_high_volatility: bool = False
+    regime_er_period: int = Field(20, ge=5, le=500)
+    regime_er_threshold: float = Field(0.3, gt=0, lt=1)
+
+
 class Strategy(ABC):
     name: ClassVar[str]
     version: ClassVar[str]
     Params: ClassVar[type[StrategyParams]]
     description: ClassVar[str] = ""
     uses_higher_timeframe: ClassVar[bool] = False
+    # numeric parameters perturbed by sensitivity analysis and walk-forward tuning
+    tunable: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, params: StrategyParams | dict | None = None):
         if isinstance(params, dict) or params is None:
             params = self.Params(**(params or {}))
         self.params = params
-        self.df: pd.DataFrame | None = None
+        self._df: pd.DataFrame | None = None
+        self._cols: dict = {}
+        # instrument contract spec (point, tick_size, ...); not part of the strategy identity
+        self.instrument: dict = {}
+
+    # ---- prepared data (column values cached as numpy arrays for fast per-bar access)
+    @property
+    def df(self) -> pd.DataFrame | None:
+        return self._df
+
+    @df.setter
+    def df(self, value: pd.DataFrame | None) -> None:
+        self._df = value
+        self._cols = {}
+
+    def v(self, col: str, i: int):
+        arr = self._cols.get(col)
+        if arr is None:
+            arr = self._cols[col] = self._df[col].to_numpy()
+        return arr[i]
 
     # ---- identity / reproducibility
     def params_hash(self) -> str:
@@ -95,19 +126,43 @@ class Strategy(ABC):
     def describe(self, i: int, side: str) -> tuple[str, str, dict]:
         return f"{self.name} {side}", "stop loss", {}
 
+    def add_regime(self, df: pd.DataFrame, atr_series: pd.Series) -> pd.DataFrame:
+        from ..regime import classify
+        p = self.params
+        df["regime"] = classify(df, atr_series, getattr(p, "regime_er_period", 20),
+                                getattr(p, "regime_er_threshold", 0.3))
+        return df
+
+    def regime_ok(self, i: int) -> tuple[bool, str]:
+        p = self.params
+        if self.df is None or "regime" not in self.df:
+            return True, ""
+        r = self.v("regime", i)
+        if getattr(p, "avoid_high_volatility", False) and r == "high_volatility":
+            return False, "high-volatility regime"
+        want = getattr(p, "regime_filter", "any")
+        if want != "any" and r != want:
+            return False, f"regime {r} (strategy trades {want} only)"
+        return True, ""
+
     def generate_signal(self, i: int) -> SignalIntent | None:
+        ok, _ = self.regime_ok(i)
+        if not ok:
+            return None
         ok, _ = self.validate_market_conditions(i)
         if not ok:
             return None
         side = self.calculate_entry(i)
         if side is None:
             return None
-        ref = float(self.df["close"].iat[i])
+        ref = float(self.v("close", i))
         stop = self.calculate_stop_loss(i, side)
         tp = self.calculate_take_profit(i, side, stop)
         if (side == "buy" and not stop < ref < tp) or (side == "sell" and not tp < ref < stop):
             return None
         rationale, invalidation, data = self.describe(i, side)
+        if "regime" in self.df:
+            data["regime"] = str(self.v("regime", i))
         return SignalIntent(side, ref, stop, tp, rationale, invalidation, data, self.target_r())
 
     def target_r(self) -> float | None:

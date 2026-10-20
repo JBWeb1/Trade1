@@ -5,6 +5,7 @@
     python -m app.cli ingest --symbol EURUSDm --timeframe H1 --start 2024-01-01 --end 2025-01-01
     python -m app.cli coverage
     python -m app.cli backtest --symbol EURUSDm --timeframe H1 --htf H4 --start 2023-01-01 --end 2025-01-01
+    python -m app.cli validate --symbol EURUSDm --timeframe H1 --htf H4 --start 2023-01-01 --end 2025-01-01
     python -m app.cli news-check            # fetch + validate the configured news feed (no save)
     python -m app.cli news-fetch            # fetch and store
     python -m app.cli news-import --file ff_calendar_thisweek.json
@@ -85,22 +86,30 @@ def cmd_coverage(_gw, _args) -> int:
     return 0
 
 
-def cmd_backtest(_gw, args) -> int:
+def _backtest_config(args):
+    """Build a BacktestConfig from CLI args; None if the symbol has no stored spec."""
     from .backtest.engine import BacktestConfig, CostModel, RiskModel
-    from .backtest.service import BacktestError, instrument_spec, run_backtest
+    from .backtest.service import BacktestError, instrument_spec
     currency = args.currency
     if currency is None:
         with session_scope() as s:
             try:
                 currency = instrument_spec(s, args.symbol).get("account_currency") or "USD"
             except BacktestError as exc:
-                print(f"BACKTEST NOT STARTED: {exc}")
-                return 1
-    cfg = BacktestConfig(
+                print(f"NOT STARTED: {exc}")
+                return None
+    return BacktestConfig(
         starting_balance=args.balance, account_currency=currency, leverage=args.leverage,
         costs=CostModel(commission_per_lot_per_side=args.commission, slippage_points=args.slippage,
                         min_spread_points=args.min_spread, spread_multiplier=args.spread_multiplier),
         risk=RiskModel(risk_per_trade_pct=args.risk))
+
+
+def cmd_backtest(_gw, args) -> int:
+    from .backtest.service import run_backtest
+    cfg = _backtest_config(args)
+    if cfg is None:
+        return 1
     params = json.loads(args.params) if args.params else {}
     with session_scope() as s:
         run = run_backtest(s, symbol=args.symbol, timeframe=args.timeframe, htf=args.htf,
@@ -131,6 +140,43 @@ def cmd_backtest(_gw, args) -> int:
             print(f"\nWARNING: {m['sample_warning']}")
         for n in m["notes"]:
             print(f"NOTE: {n}")
+    return 0
+
+
+def cmd_validate(_gw, args) -> int:
+    from .backtest.service import run_validation_report
+    cfg = _backtest_config(args)
+    if cfg is None:
+        return 1
+    params = json.loads(args.params) if args.params else {}
+    print("Running validation (development / validation / out-of-sample, walk-forward, sensitivity)...")
+    with session_scope() as s:
+        rep = run_validation_report(s, symbol=args.symbol, timeframe=args.timeframe, htf=args.htf,
+                                    start=_date(args.start), end=_date(args.end), strategy_name=args.strategy,
+                                    params=params, config=cfg)
+        if rep.status != "completed":
+            print(f"VALIDATION FAILED TO RUN (report {rep.id}): {rep.error}")
+            return 1
+        r = rep.report
+        print(f"\nValidation report #{rep.id}: {args.symbol} {args.timeframe} {r['strategy']['name']} "
+              f"v{r['strategy']['version']} [{r['strategy']['params_hash']}]")
+        print(f"Splits: {r['splits']}")
+        print(f"\n  {'segment':<16}{'trades':>8}{'win%':>8}{'exp R':>9}{'PF':>8}{'ret %':>9}{'maxDD %':>9}")
+        for name, m in r["segments"].items():
+            wr = f"{m['win_rate'] * 100:.1f}" if m["win_rate"] is not None else "-"
+            print(f"  {name:<16}{m['closed_trades']:>8}{wr:>8}{str(m['expectancy_r']):>9}"
+                  f"{str(m['profit_factor']):>8}{str(m['net_return_pct']):>9}{str(m['max_drawdown_pct']):>9}")
+        wf = r["walk_forward"]
+        print(f"\nWalk-forward: {len(wf['folds'])} folds, {wf['oos_trades']} OOS trades, "
+              f"expectancy {wf['oos_expectancy_r']} R, positive folds {wf['positive_fraction']}")
+        print(f"Sensitivity (+/-{int(r['sensitivity']['step'] * 100)}%): positive fraction "
+              f"{r['sensitivity']['positive_fraction']}")
+        print(f"Out-of-sample t-statistic of R-multiples: {r['oos_t_stat']}")
+        print("\nChecks:")
+        for c in r["checks"]:
+            print(f"  [{'PASS' if c['passed'] else 'FAIL'}] {c['check']}: {c['detail']}")
+        print(f"\nVERDICT: {rep.verdict}")
+        print(r["disclaimer"])
     return 0
 
 
@@ -198,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--slippage", type=float, default=0.0, help="points")
     p.add_argument("--min-spread", type=float, default=0.0, help="points")
     p.add_argument("--spread-multiplier", type=float, default=1.0)
+    v = sub.add_parser("validate")
+    for a in p._actions:  # same options as `backtest`
+        if a.dest != "help":
+            v._add_action(a)
     sub.add_parser("news-check")
     sub.add_parser("news-fetch")
     p = sub.add_parser("news-import")
@@ -208,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(settings.log_level)
     gw = MT5Gateway(settings)
     handlers = {"mt5-check": cmd_mt5_check, "discover": cmd_discover, "ingest": cmd_ingest,
-                "coverage": cmd_coverage, "backtest": cmd_backtest, "news-check": cmd_news_check,
+                "coverage": cmd_coverage, "backtest": cmd_backtest, "validate": cmd_validate, "news-check": cmd_news_check,
                 "news-fetch": cmd_news_fetch, "news-import": cmd_news_import}
     try:
         return handlers[args.cmd](gw, args)

@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.ingestion import load_bars
-from ..models import AuditLog, BacktestRun, BacktestTrade, Instrument, StrategyVersion, utcnow
+from ..models import (AuditLog, BacktestRun, BacktestTrade, Instrument, StrategyVersion,
+                      ValidationReport, utcnow)
 from ..mt5.constants import TIMEFRAMES, Timeframe
 from .engine import BacktestConfig, BacktestEngine, SpecError
 from .metrics import compute_metrics, downsample_equity
@@ -89,6 +90,7 @@ def run_backtest(session: Session, *, symbol: str, timeframe: str, start: dateti
                                 "htf": fingerprint(htf_df) if htf_df is not None else None,
                                 "spec_symbol": spec.get("symbol"),
                                 "spec_issues": spec.get("issues", [])}
+        strategy.instrument = spec
         df = strategy.prepare(primary, htf_df, TIMEFRAMES[tf].minutes,
                               TIMEFRAMES[htf_tf].minutes if htf_tf else None)
         if config.account_currency != (spec.get("account_currency") or config.account_currency):
@@ -107,7 +109,7 @@ def run_backtest(session: Session, *, symbol: str, timeframe: str, start: dateti
                 exit_reason=t.exit_reason, gross_pnl=t.gross_pnl, commission=t.commission,
                 swap=t.swap, spread_cost=t.spread_cost, slippage_cost=t.slippage_cost,
                 net_pnl=t.net_pnl, planned_risk_money=t.planned_risk_money, bars_held=t.bars_held,
-                ambiguous_bar=t.ambiguous_bar, rationale=t.rationale))
+                ambiguous_bar=t.ambiguous_bar, regime=t.regime, rationale=t.rationale))
         run.status = "completed"
     except (BacktestError, SpecError, ValueError) as exc:
         run.status = "failed"
@@ -118,3 +120,70 @@ def run_backtest(session: Session, *, symbol: str, timeframe: str, start: dateti
                                   "strategy": strategy.get_strategy_metadata()["params_hash"]}))
     session.flush()
     return run
+
+
+def _load_inputs(session: Session, symbol: str, tf: Timeframe, htf_tf: Timeframe | None,
+                 start: datetime, end: datetime, strategy) -> tuple[dict, pd.DataFrame, pd.DataFrame | None]:
+    spec = instrument_spec(session, symbol)
+    # load everything up to `end`: earlier bars only warm indicators up, trades start at `start`
+    primary = load_bars(session, symbol, tf, None, end)
+    if (primary["time"] >= pd.Timestamp(start)).sum() < strategy.warmup_bars() + 50:
+        raise BacktestError(f"not enough {tf.value} bars stored for {symbol} in range; run `ingest` first")
+    htf_df = None
+    if htf_tf:
+        htf_df = load_bars(session, symbol, htf_tf, None, end)
+        if htf_df.empty:
+            raise BacktestError(f"no {htf_tf.value} bars stored for {symbol}; ingest them first")
+    return spec, primary, htf_df
+
+
+def run_validation_report(session: Session, *, symbol: str, timeframe: str, start: datetime, end: datetime,
+                          strategy_name: str, params: dict | None = None, htf: str | None = None,
+                          config: BacktestConfig | None = None, policy=None,
+                          backtest_run_id: int | None = None) -> ValidationReport:
+    from .validation import Inputs, ValidationPolicy, run_validation, split_points
+
+    tf = Timeframe(timeframe)
+    htf_tf = Timeframe(htf) if htf else None
+    if start.tzinfo is None or end.tzinfo is None or end <= start:
+        raise BacktestError("start/end must be timezone-aware UTC and end after start")
+    strategy = get_strategy(strategy_name, params)
+    config = config or BacktestConfig()
+    policy = policy or ValidationPolicy()
+    version = get_or_create_version(session, strategy)
+    rep = ValidationReport(strategy_version_id=version.id, backtest_run_id=backtest_run_id, symbol=symbol,
+                           timeframe=tf.value, htf=htf_tf.value if htf_tf else None, start=start, end=end,
+                           config={"backtest": config.model_dump(), "policy": policy.model_dump()},
+                           oos_key="pending", status="running")
+    session.add(rep)
+    session.flush()
+    try:
+        spec, primary, htf_df = _load_inputs(session, symbol, tf, htf_tf, start, end, strategy)
+        window = primary[(primary["time"] >= pd.Timestamp(start)) & (primary["time"] < pd.Timestamp(end))]
+        if len(window) < 500:
+            raise BacktestError(f"only {len(window)} bars in range; validation needs at least 500")
+        _, val_end = split_points(window["time"], policy)
+        rep.oos_key = "|".join([strategy_name, symbol, tf.value, val_end.isoformat(),
+                                window["time"].iloc[-1].isoformat()])
+        prior = session.scalars(select(ValidationReport.id).where(
+            ValidationReport.oos_key == rep.oos_key, ValidationReport.id != rep.id,
+            ValidationReport.status == "completed")).all()
+        rep.oos_prior_uses = len(prior)
+        rep.data_fingerprint = {"primary": fingerprint(primary),
+                                "htf": fingerprint(htf_df) if htf_df is not None else None}
+        inp = Inputs(strategy_name, strategy.params.model_dump(), primary, htf_df, TIMEFRAMES[tf].minutes,
+                     TIMEFRAMES[htf_tf].minutes if htf_tf else None, spec, config)
+        report = run_validation(inp, start, end, policy, rep.oos_prior_uses)
+        report["strategy"] = strategy.get_strategy_metadata()
+        rep.report = report
+        rep.verdict = report["verdict"]
+        rep.reasons = report["reasons"]
+        rep.status = "completed"
+    except (BacktestError, SpecError, ValueError) as exc:
+        rep.status = "failed"
+        rep.error = str(exc)
+    session.add(AuditLog(actor="system", action="validation.run",
+                         details={"report_id": rep.id, "status": rep.status, "verdict": rep.verdict,
+                                  "oos_prior_uses": rep.oos_prior_uses}))
+    session.flush()
+    return rep

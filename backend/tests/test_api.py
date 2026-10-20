@@ -98,7 +98,7 @@ def test_ingest_validation(client, body):
 # Every route that can change state must be listed here after review. None may submit orders.
 REVIEWED_WRITE_ROUTES = {
     ("POST", "/api/markets/sync"), ("POST", "/api/market-data/ingest"), ("POST", "/api/news/refresh"),
-    ("POST", "/api/strategies"), ("POST", "/api/backtests"),
+    ("POST", "/api/strategies"), ("POST", "/api/backtests"), ("POST", "/api/validation/{backtest_id}"),
 }
 
 

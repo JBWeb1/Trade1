@@ -1,7 +1,10 @@
-from .base import SignalIntent, Strategy, StrategyParams
+from .base import RegimeParams, SignalIntent, Strategy, StrategyParams
+from .breakout import RangeBreakout
+from .sweep import LiquiditySweep
 from .trend import TrendContinuation
 
-REGISTRY: dict[str, type[Strategy]] = {TrendContinuation.name: TrendContinuation}
+REGISTRY: dict[str, type[Strategy]] = {
+    c.name: c for c in (TrendContinuation, RangeBreakout, LiquiditySweep)}
 
 
 def get_strategy(name: str, params: dict | None = None) -> Strategy:
@@ -12,4 +15,4 @@ def get_strategy(name: str, params: dict | None = None) -> Strategy:
     return cls(params or {})
 
 
-__all__ = ["REGISTRY", "SignalIntent", "Strategy", "StrategyParams", "get_strategy"]
+__all__ = ["REGISTRY", "RegimeParams", "SignalIntent", "Strategy", "StrategyParams", "get_strategy"]

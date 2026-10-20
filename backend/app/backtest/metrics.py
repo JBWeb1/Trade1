@@ -100,8 +100,12 @@ def compute_metrics(res: BacktestResult, starting_balance: float) -> dict:
         by_side = df.groupby("side")["pnl"].agg(["count", "sum", "mean"])
         m["by_side"] = {k: {"trades": int(v["count"]), "net": _f(v["sum"], 2), "expectancy": _f(v["mean"], 2)}
                         for k, v in by_side.iterrows()}
+        rg = pd.DataFrame([{"regime": t.regime or "unknown", "pnl": t.net_pnl} for t in trades])
+        by_regime = rg.groupby("regime")["pnl"].agg(["count", "sum", "mean"])
+        m["by_regime"] = {k: {"trades": int(v["count"]), "net": _f(v["sum"], 2), "expectancy": _f(v["mean"], 2)}
+                          for k, v in by_regime.iterrows()}
     else:
-        m["by_month"], m["by_side"] = {}, {}
+        m["by_month"], m["by_side"], m["by_regime"] = {}, {}, {}
     m["sample_warning"] = (None if n >= 100 else
                            f"only {n} closed trades - far too few to draw conclusions" if n < 30 else
                            f"{n} closed trades - treat results as preliminary")

@@ -37,10 +37,12 @@ to any logged-in account.
 * API routes (bearer auth, fail closed) and CLI.
 * Optional Forex Factory calendar adapter and news blackout filter.
 
-## Phase C — Backtesting (in progress)
+## Phase C — Backtesting and validation (done)
 
-Done: items 1–5 below except the extra strategies; `trend_continuation` v1.0.0 implemented.
-Next: item 6 (validation), then strategies B–D.
+Done: items 1–7 below. Strategies: `trend_continuation` v1.1.0, `range_breakout` v1.0.0,
+`liquidity_sweep` v1.0.0 (ported from the prototype, rewritten without look-ahead), with a shared
+regime filter. Not yet in backtests: the news blackout (calendar history only accumulates from the
+day collection starts), a pullback strategy (candidate C), multi-symbol portfolio tests.
 
 
 1. Multi-timeframe bar alignment: a higher-timeframe bar becomes visible only after it **closes**
@@ -69,6 +71,16 @@ from the original prototype (commit `0dbaf88`) would be a natural first candidat
 second opinion on a strategy, but it does not replace this pipeline: MQL5 code cannot use Trade1's
 validation gate, audit trail or demo-only safety checks. If used, an EA must be cross-checked
 against the Python backtest on the same symbol and period before its results are trusted.
+
+## Roadmap to a production system (beyond this release)
+
+| Area | Plan |
+|---|---|
+| Risk engine (live) | Position size from stop distance, daily loss limit, max-drawdown kill switch, open-position cap, correlated-exposure cap, news blackout. Shared with the backtester so both behave the same |
+| Execution (Phase E) | One order module, the only code allowed to call `order_send`. It re-verifies demo on every order, uses idempotency keys, reconciles with the broker before any retry (never doubles up), handles rejections, slippage and disconnects, and has an emergency stop |
+| Running 24/5 | A Windows VPS (MT5's built-in VPS or Exness VPS), plus a watchdog that restarts the process and checks for stale data |
+| Monitoring | Phone alerts for errors, disconnects, lockouts and kill-switch events. A full decision journal (signals, approvals, rejections, fills) that can be exported to an external journal app |
+| Proof before money | At least 2–3 months of demo forward testing, compared trade by trade with what the backtest predicted. Only then a separate, explicit live-trading release with the smallest size, scaling only if live matches demo |
 
 ## Phase D — UI
 

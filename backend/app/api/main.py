@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 
 from .. import __version__
 from ..backtest.engine import BacktestConfig
-from ..backtest.service import get_or_create_version, run_backtest
+from ..backtest.service import get_or_create_version, run_backtest, run_validation_report
+from ..backtest.validation import ValidationPolicy
 from ..backtest.strategies import REGISTRY, get_strategy
 from ..config import Settings, get_settings
 from ..data.ingestion import coverage, ingest_bars, load_bars
@@ -26,7 +27,8 @@ from ..integrations.news.filter import NewsBlackout
 from ..integrations.news.service import NewsDisabled, RefreshTooSoon, refresh_from_feed
 from ..integrations.news.store import coverage as news_coverage, load_events
 from ..markets.service import sync_instruments
-from ..models import AuditLog, BacktestRun, BacktestTrade, IngestionRun, Instrument, StrategyVersion
+from ..models import (AuditLog, BacktestRun, BacktestTrade, IngestionRun, Instrument, StrategyVersion,
+                      ValidationReport)
 from ..mt5.constants import Timeframe
 from ..mt5.gateway import MT5Error, MT5Gateway
 from .deps import get_gateway, require_token
@@ -370,3 +372,42 @@ def backtest_trades(run_id: int, _: Auth, db: DB, limit: int = Query(1000, ge=1,
                       .order_by(BacktestTrade.entry_time).limit(limit).offset(offset)).all()
     cols = [c.name for c in BacktestTrade.__table__.columns]
     return {"items": [{c: getattr(t, c) for c in cols} for t in rows]}
+
+
+# ---------------------------------------------------------------- validation
+
+class ValidationRequest(BaseModel):
+    policy: ValidationPolicy = ValidationPolicy()
+
+
+def _report_summary(r: ValidationReport) -> dict:
+    return {"id": r.id, "status": r.status, "verdict": r.verdict, "reasons": r.reasons, "error": r.error,
+            "symbol": r.symbol, "timeframe": r.timeframe, "htf": r.htf, "start": r.start, "end": r.end,
+            "strategy_version_id": r.strategy_version_id, "backtest_run_id": r.backtest_run_id,
+            "oos_prior_uses": r.oos_prior_uses, "created_at": r.created_at}
+
+
+@app.post("/api/validation/{backtest_id}")
+def validation_create(backtest_id: int, _: Auth, db: DB, req: ValidationRequest | None = None) -> dict:
+    """Validate the strategy version, symbol, timeframes, range and costs of an existing backtest."""
+    run = _get_run(db, backtest_id)
+    version = db.get(StrategyVersion, run.strategy_version_id)
+    rep = run_validation_report(
+        db, symbol=run.symbol, timeframe=run.timeframe, htf=run.htf, start=run.start, end=run.end,
+        strategy_name=version.name, params=version.params, config=BacktestConfig(**run.config),
+        policy=(req or ValidationRequest()).policy, backtest_run_id=run.id)
+    return {**_report_summary(rep), "report": rep.report}
+
+
+@app.get("/api/validation")
+def validation_list(_: Auth, db: DB, limit: int = Query(50, ge=1, le=500)) -> dict:
+    rows = db.scalars(select(ValidationReport).order_by(ValidationReport.id.desc()).limit(limit)).all()
+    return {"items": [_report_summary(r) for r in rows]}
+
+
+@app.get("/api/validation/{report_id}")
+def validation_detail(report_id: int, _: Auth, db: DB) -> dict:
+    r = db.get(ValidationReport, report_id)
+    if r is None:
+        raise HTTPException(404, "validation report not found")
+    return {**_report_summary(r), "report": r.report, "data_fingerprint": r.data_fingerprint}

@@ -15,7 +15,11 @@ if (-not (Get-Process terminal64 -ErrorAction SilentlyContinue)) {
 $symbol = Read-Host "Symbol (exact MT5 name, e.g. EURUSDm)"
 $tf = Read-Host "Timeframe: M1, M15, H1 or H4 [H1]"; if (-not $tf) { $tf = "H1" }
 $tf = $tf.ToUpper()
-$balance = Read-Host "Starting virtual balance [10000]"; if (-not $balance) { $balance = "10000" }
+$balance = Read-Host "Starting virtual balance (use what you would really trade with) [10000]"; if (-not $balance) { $balance = "10000" }
+if ([double]$balance -lt 200) {
+    Write-Host "Note: with a balance this small most trades are rejected because the broker's minimum lot" -ForegroundColor Yellow
+    Write-Host "already risks more than allowed. The report will show this under 'Rejected signals'." -ForegroundColor Yellow
+}
 $commission = Read-Host "Commission per lot per side in account currency (0 for Exness Standard) [0]"; if (-not $commission) { $commission = "0" }
 
 $end = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
@@ -44,13 +48,19 @@ try {
         & $Py -m app.cli ingest --symbol $symbol --timeframe $htf --start $htfStart --end $end
     }
 
-    Write-Host "`n===== Backtest: trend_continuation =====" -ForegroundColor Cyan
-    & $Py -m app.cli backtest --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
-        --balance $balance --commission $commission --risk 0.25
+    foreach ($strategy in @("trend_continuation", "range_breakout", "liquidity_sweep")) {
+        Write-Host "`n===== Backtest: $strategy =====" -ForegroundColor Cyan
+        & $Py -m app.cli backtest --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
+            --strategy $strategy --balance $balance --commission $commission --risk 0.25
+        Write-Host "`n===== Validation: $strategy (takes up to a few minutes) =====" -ForegroundColor Cyan
+        & $Py -m app.cli validate --symbol $symbol --timeframe $tf --htf $htf --start $start --end $end `
+            --strategy $strategy --balance $balance --commission $commission --risk 0.25
+    }
 } finally {
     Pop-Location
     Stop-Transcript | Out-Null
 }
 Write-Host "`nReport saved to: $Report" -ForegroundColor Green
-Write-Host "Paste it to Claude. These are historical, in-sample simulation results - not a forecast."
+Write-Host "Share it with Claude. Most strategies FAIL validation - that is the system protecting you."
+Write-Host "Running this again on the same period re-uses the out-of-sample data; reports will say so."
 Read-Host "Press Enter to close"

@@ -3,8 +3,8 @@
 A research-first algorithmic trading platform for an **Exness MetaTrader 5 demo account**:
 historical data → backtesting → out-of-sample validation → (later) demo-only automation.
 
-> **Status: data foundation (Phase B) done; backtest engine (Phase C, first part) done.**
-> Out-of-sample/walk-forward validation, more strategies, the UI and demo execution are next.
+> **Status: data foundation (Phase B) and backtesting + validation (Phase C) done.**
+> The dashboard (Phase D) and demo-only execution (Phase E) are next.
 > **Live trading does not exist in this release**, and no code path can send a broker order.
 > See [docs/PLAN.md](docs/PLAN.md) for the phase plan.
 
@@ -18,10 +18,12 @@ historical data → backtesting → out-of-sample validation → (later) demo-on
 | Historical bars for M1 / M15 / H1 / H4: chunked download, quality checks, forming bar dropped, idempotent storage, per-run audit record | ✅ |
 | Backtest engine: bar-based, spread/commission/slippage/swap, gaps, conservative intrabar rule, volume and margin checks, risk lockouts | ✅ |
 | Multi-timeframe alignment without look-ahead (tested) | ✅ |
-| Strategy interface + `trend_continuation` v1.0.0 (a hypothesis to test, not a proven strategy) | ✅ |
+| Strategies (hypotheses to test, not proven): `trend_continuation`, `range_breakout`, `liquidity_sweep` | ✅ |
+| Market-regime filter (trending / ranging / high volatility) and per-regime results | ✅ |
+| Validation: development / validation / untouched out-of-sample split, walk-forward, parameter sensitivity, sample-size rules, PASSED / FAILED / INCONCLUSIVE | ✅ |
 | Metrics, stored runs and trades, reproducible strategy versions | ✅ |
 | Diagnostics, optional Forex Factory news blackout | ✅ |
-| Out-of-sample / walk-forward validation, more strategies, UI, demo execution | ⏳ next phases |
+| Dashboard, demo-only execution, forward testing, VPS monitoring | ⏳ next phases |
 
 ## Getting started on your PC (about 5 minutes)
 
@@ -40,8 +42,13 @@ account is a demo before doing anything.
 4. Double-click **`scripts\run_checks.bat`**. When asked for a symbol, type the exact Market Watch name,
    e.g. **`XAUUSDm`** (gold). It checks the demo account, lists your markets and downloads history. It
    places no orders. The output is saved to `trade1_check_report.txt`.
-5. Double-click **`scripts\run_backtest.bat`** to download history for a symbol and timeframe and run
-   the first backtest. The output is saved to `trade1_backtest_<date>.txt`.
+5. Double-click **`scripts\run_backtest.bat`**. It downloads history for a symbol and timeframe, then
+   backtests **and validates** all three strategies. The output is saved to `trade1_backtest_<date>.txt`.
+
+**Set the demo balance to what you would really trade with.** On a $10 balance, almost every trade is
+rejected, because the broker's minimum lot (0.01) already risks more than 0.25–1% of $10. Trade1
+rejects those trades rather than over-risking. In MT5 you can open a new demo account with a realistic
+balance.
 
 Share the two report files with Claude to review the results. Backtest results are historical,
 in-sample simulations (validation comes next). They are not a forecast.
@@ -134,6 +141,8 @@ Interactive docs: http://127.0.0.1:8000/docs
 | GET/POST | `/api/strategies`, GET `/api/strategies/{id}` | Available strategies, immutable parameter versions |
 | POST | `/api/backtests` | Run a backtest on stored data |
 | GET | `/api/backtests`, `/api/backtests/{id}`, `/{id}/metrics`, `/{id}/trades` | Results, equity curve, trades |
+| POST | `/api/validation/{backtest_id}` | Validate a backtest's strategy, symbol, range and costs |
+| GET | `/api/validation`, `/api/validation/{id}` | Validation reports and verdicts |
 
 ## Backtesting
 
@@ -157,6 +166,26 @@ for the contract specification. Execution model, stated in every report:
   the report says it is not modelled. Exness swap-free accounts: treat swap as 0.
 * Daily-loss lockout, equity-drawdown lockout, and a cooldown after consecutive losses.
 * Every report includes the sample-size warning, rejected signals by reason, costs and a data fingerprint.
+
+## Validation
+
+```powershell
+python -m app.cli validate --symbol XAUUSDm --timeframe H1 --htf H4 --start 2023-01-01 --end 2025-01-01 --strategy trend_continuation
+```
+
+| Step | What it does |
+|---|---|
+| Chronological split | 60% development, 20% validation, 20% final out-of-sample (by bar count, never shuffled) |
+| Walk-forward | Development+validation cut into 6 blocks. For each of 5 folds, parameters are picked on the earlier blocks from a small grid, then tested on the next block |
+| Sensitivity | Each tunable parameter moved ±20%, one at a time. A real edge should survive small changes |
+| Sample rules | ≥200 trades total, ≥30 in validation, ≥30 out-of-sample (engineering defaults, configurable) |
+| Protected out-of-sample | The final block is meant to be seen once. Every re-use (e.g. after changing parameters) is counted, and a re-used block can never produce PASSED |
+
+**Verdict:** FAILED if any performance or robustness check fails (a small sample cannot rescue a losing or
+fragile strategy). INCONCLUSIVE if only sample-size or protocol checks fail. PASSED only if every check
+passes. Even PASSED only means "survived these tests on this data". The next step is 2–3 months of
+forward testing on demo, compared against the backtest. **Expect most strategies to fail.** That is the
+system stopping you from losing money.
 
 ## Optional: Forex Factory economic calendar
 

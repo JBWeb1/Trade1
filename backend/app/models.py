@@ -184,4 +184,28 @@ class BacktestTrade(Base):
     planned_risk_money: Mapped[float] = mapped_column(Float)
     bars_held: Mapped[int] = mapped_column(Integer)
     ambiguous_bar: Mapped[bool] = mapped_column(Boolean, default=False)
+    regime: Mapped[str | None] = mapped_column(String(16))
     rationale: Mapped[str] = mapped_column(Text)
+
+
+class ValidationReport(Base):
+    __tablename__ = "validation_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    strategy_version_id: Mapped[int] = mapped_column(ForeignKey("strategy_versions.id"), index=True)
+    backtest_run_id: Mapped[int | None] = mapped_column(ForeignKey("backtest_runs.id"))
+    symbol: Mapped[str] = mapped_column(String(64))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    htf: Mapped[str | None] = mapped_column(String(8))
+    start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    config: Mapped[dict] = mapped_column(JsonType)
+    data_fingerprint: Mapped[dict] = mapped_column(JsonType, default=dict)
+    # strategy name|symbol|timeframe|oos start|oos end - shared by every parameter set
+    oos_key: Mapped[str] = mapped_column(String(255), index=True)
+    oos_prior_uses: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|completed|failed
+    verdict: Mapped[str | None] = mapped_column(String(16))  # PASSED|FAILED|INCONCLUSIVE
+    reasons: Mapped[list] = mapped_column(JsonType, default=list)
+    report: Mapped[dict] = mapped_column(JsonType, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)

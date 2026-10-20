@@ -88,6 +88,7 @@ class Trade:
     ambiguous_bar: bool = False
     planned_risk_money: float = 0.0
     entry_index: int = -1
+    regime: str | None = None
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -156,7 +157,11 @@ class BacktestEngine:
         return self._money(price, volume) / self.cfg.leverage
 
     # ------------------------------------------------------------- run
-    def run(self, df: pd.DataFrame) -> BacktestResult:
+    def run(self, df: pd.DataFrame, trade_start: datetime | None = None,
+            trade_end: datetime | None = None) -> BacktestResult:
+        """Simulate bars with open time in [trade_start, trade_end). Bars before
+        trade_start still feed the (already prepared, causal) indicators; positions
+        still open at the end of the window are closed at the last bar's close."""
         cfg, sp = self.cfg, self.spec
         point = sp["point"]
         slip = cfg.costs.slippage_points * point
@@ -174,7 +179,12 @@ class BacktestEngine:
             notes.append("commission set to 0 - correct for Exness Standard accounts, not for Raw/Zero")
 
         rows = list(df.itertuples(index=False))
-        n = len(rows)
+        times = df["time"]
+        i0 = int(times.searchsorted(pd.Timestamp(trade_start))) if trade_start is not None else 0
+        i_end = int(times.searchsorted(pd.Timestamp(trade_end))) if trade_end is not None else len(rows)
+        if i_end <= i0:
+            raise ValueError("no bars inside the trading window")
+        n = i_end  # bars at index >= n are outside the window
         balance = cfg.starting_balance
         trades: list[Trade] = []
         rejections: list[Rejection] = []
@@ -210,7 +220,8 @@ class BacktestEngine:
             else:
                 consecutive_losses = 0
 
-        for i, row in enumerate(rows):
+        for i in range(i0, n):
+            row = rows[i]
             spread = self._spread(row)
             bar_day = row.time.date()
 
@@ -262,7 +273,8 @@ class BacktestEngine:
                                     commission=comm * vol,
                                     spread_cost=self._money(spread, vol) if buy else 0.0,
                                     slippage_cost=self._money(slip, vol),
-                                    planned_risk_money=self._money(abs(entry - sig.stop_loss), vol))
+                                    planned_risk_money=self._money(abs(entry - sig.stop_loss), vol),
+                                    regime=sig.data_used.get("regime"))
                         pos.entry_index = i
 
             # --- 3. stops / targets inside this bar
@@ -349,12 +361,13 @@ class BacktestEngine:
                 pending, pending_time = sig, close_time
 
         if pos is not None:
-            last = rows[-1]
+            last = rows[n - 1]
             spread = self._spread(last)
             px = last.close if pos.side == "buy" else last.close + spread
             if pos.side == "sell":
                 pos.spread_cost += self._money(spread, pos.volume)
-            close(pos, px, last.time + pd.Timedelta(minutes=self.tf), "end of data")
+            close(pos, px, last.time + pd.Timedelta(minutes=self.tf),
+                  "end of data" if n == len(rows) else "end of window")
 
         eq = pd.DataFrame(equity_rows, columns=["time", "equity", "balance"])
-        return BacktestResult(trades, eq, rejections, n, notes)
+        return BacktestResult(trades, eq, rejections, n - i0, notes)

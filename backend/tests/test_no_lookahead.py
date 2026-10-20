@@ -104,3 +104,40 @@ def test_strategy_params_validated_and_hash_stable():
     b = get_strategy("trend_continuation", {"fast_ema": 10})
     c = get_strategy("trend_continuation", {"fast_ema": 12})
     assert a.params_hash() == b.params_hash() != c.params_hash()
+
+
+@pytest.mark.parametrize("name,params", [
+    ("range_breakout", {"range_bars": 12, "max_range_atr": 8}),
+    ("liquidity_sweep", {"lookback": 40}),
+    ("trend_continuation", {"breakout_lookback": 5, "use_htf_filter": False, "regime_filter": "trending"}),
+])
+def test_all_strategies_are_truncation_invariant(name, params):
+    h1 = random_walk(1200, 60, seed=3)
+
+    def sigs(df):
+        s = get_strategy(name, params)
+        s.instrument = {"point": 0.00001}
+        s.prepare(df, None, 60, None)
+        out = {}
+        for i in range(s.warmup_bars(), len(s.df)):
+            sig = s.generate_signal(i)
+            if sig:
+                out[s.df["time"].iat[i]] = (sig.side, round(sig.stop_loss, 10), sig.data_used.get("regime"))
+        return out
+
+    full = sigs(h1)
+    assert len(full) >= 5, f"{name} produced too few signals for a meaningful test"
+    for cut in (500, 901):
+        part = sigs(h1.iloc[:cut])
+        assert part == {t: v for t, v in full.items() if t <= h1["time"].iloc[cut - 1]}
+
+
+def test_regime_labels_are_causal_and_known():
+    from app.backtest.indicators import atr
+    from app.backtest.regime import classify
+    h1 = random_walk(800, 60, seed=4)
+    full = classify(h1, atr(h1, 14))
+    part = classify(h1.iloc[:500], atr(h1.iloc[:500], 14))
+    assert (full.iloc[:500] == part).all()
+    assert set(full.unique()) <= {"trending", "ranging", "high_volatility", "unknown"}
+    assert {"trending", "ranging"} <= set(full.unique())

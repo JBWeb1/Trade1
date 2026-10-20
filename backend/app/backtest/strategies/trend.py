@@ -19,10 +19,10 @@ from pydantic import Field, model_validator
 
 from ..alignment import align_higher_timeframe
 from ..indicators import atr, ema, rolling_high, rolling_low
-from .base import Strategy, StrategyParams
+from .base import RegimeParams, Strategy
 
 
-class TrendParams(StrategyParams):
+class TrendParams(RegimeParams):
     fast_ema: int = Field(20, ge=2, le=500)
     slow_ema: int = Field(50, ge=3, le=1000)
     htf_ema: int = Field(50, ge=2, le=1000)
@@ -46,10 +46,11 @@ class TrendParams(StrategyParams):
 
 class TrendContinuation(Strategy):
     name = "trend_continuation"
-    version = "1.0.0"
+    version = "1.1.0"  # 1.1: optional regime filter (default "any" = 1.0 behaviour)
     Params = TrendParams
     description = "EMA trend + HTF filter + breakout momentum, ATR stop, fixed R:R target"
     uses_higher_timeframe = True
+    tunable = ("fast_ema", "slow_ema", "breakout_lookback", "stop_atr", "reward_risk")
 
     def warmup_bars(self) -> int:
         p = self.params
@@ -63,6 +64,7 @@ class TrendContinuation(Strategy):
         df["atr"] = atr(df, p.atr_period)
         df["hh"] = rolling_high(df["high"], p.breakout_lookback)
         df["ll"] = rolling_low(df["low"], p.breakout_lookback)
+        self.add_regime(df, df["atr"])
         if p.use_htf_filter:
             if htf is None or htf_minutes is None:
                 raise ValueError("trend_continuation needs higher-timeframe bars when use_htf_filter=True")
@@ -75,7 +77,7 @@ class TrendContinuation(Strategy):
         return df
 
     def _v(self, col: str, i: int) -> float:
-        return float(self.df[col].iat[i])
+        return float(self.v(col, i))
 
     def validate_market_conditions(self, i):
         p = self.params
