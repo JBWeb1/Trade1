@@ -1,5 +1,6 @@
 import { ActionButton } from "@/components/Actions";
 import { DrawdownChart, EquityChart } from "@/components/charts/EquityChart";
+import { MonteCarloCard } from "@/components/MonteCarlo";
 import { Badge, Card, EmptyState, ErrorBox, Kv, PageHeader, SimulationLabel, Stat, Table, Td, statusTone } from "@/components/ui";
 import { tryApi } from "@/lib/backend";
 import { money, num, pct, price, signClass, utc } from "@/lib/format";
@@ -43,6 +44,13 @@ export default async function BacktestPage({ params }: { params: Promise<{ id: s
       actions={<>
         <Badge tone={statusTone(r.status)}>{r.status}</Badge>
         {r.status === "completed" && (
+          <a className="rounded-md border border-line bg-panel-2 px-3 py-1.5 text-sm hover:border-accent" href={`/export/journal/${r.id}`}>Export journal (CSV)</a>
+        )}
+        {r.status === "completed" && (
+          <ActionButton path={`research/tick-check/${r.id}`} label="Check with tick data" busyLabel="Reading MT5 ticks…"
+            navigatePrefix="/research/" />
+        )}
+        {r.status === "completed" && (
           <ActionButton path={`validation/${r.id}`} label="Validate this strategy" busyLabel="Validating (can take minutes)…"
             confirmText="Validation uses this period's final 20% as untouched out-of-sample data. Re-validating the same period with different settings is recorded as re-use. Continue?"
             navigatePrefix="/validation/" />
@@ -73,6 +81,8 @@ export default async function BacktestPage({ params }: { params: Promise<{ id: s
       <Card title="Drawdown from running peak" className="mt-4">
         {r.equity_curve.length ? <DrawdownChart points={r.equity_curve} /> : <EmptyState title="No equity data" />}
       </Card>
+
+      <div className="mt-4"><MonteCarloCard mc={m.monte_carlo} /></div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card title="Risk and ratios">

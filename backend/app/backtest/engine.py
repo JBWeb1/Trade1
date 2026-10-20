@@ -53,6 +53,11 @@ class RiskModel(BaseModel):
     max_consecutive_losses: int = Field(4, ge=1)
     cooldown_bars_after_losses: int = Field(24, ge=0)
     max_holding_bars: int | None = Field(None, ge=1)
+    # Volatility-based sizing: risk x clamp(median ATR% / current ATR%, vol_min_scale, 1.0),
+    # so positions shrink when the market is wilder than usual (never grow above base risk).
+    volatility_sizing: bool = False
+    vol_lookback_bars: int = Field(250, ge=20, le=5000)
+    vol_min_scale: float = Field(0.4, gt=0, le=1)
 
 
 class BacktestConfig(BaseModel):
@@ -63,6 +68,10 @@ class BacktestConfig(BaseModel):
     costs: CostModel = CostModel()
     risk: RiskModel = RiskModel()
     swap_triple_weekday: int = Field(2, ge=0, le=6)  # Wednesday (0=Monday)
+    # News blackout from stored calendar events (only where calendar history exists)
+    news_blackout: bool = False
+    news_minutes_before: int = Field(30, ge=0, le=720)
+    news_minutes_after: int = Field(30, ge=0, le=720)
 
 
 @dataclass
@@ -158,7 +167,7 @@ class BacktestEngine:
 
     # ------------------------------------------------------------- run
     def run(self, df: pd.DataFrame, trade_start: datetime | None = None,
-            trade_end: datetime | None = None) -> BacktestResult:
+            trade_end: datetime | None = None, news=None, news_weeks: set | None = None) -> BacktestResult:
         """Simulate bars with open time in [trade_start, trade_end). Bars before
         trade_start still feed the (already prepared, causal) indicators; positions
         still open at the end of the window are closed at the last bar's close."""
@@ -200,6 +209,17 @@ class BacktestEngine:
         consecutive_losses = 0
         cooldown_until = -1
         warm = self.s.warmup_bars()
+        pending_scale = 1.0
+        vol_scale = None
+        if cfg.risk.volatility_sizing:
+            if "atr" not in df.columns:
+                raise ValueError("volatility sizing needs a strategy that computes ATR")
+            atr_pct = df["atr"] / df["close"]
+            median = atr_pct.rolling(cfg.risk.vol_lookback_bars, min_periods=min(50, cfg.risk.vol_lookback_bars)).median()
+            vol_scale = (median / atr_pct).clip(lower=cfg.risk.vol_min_scale, upper=1.0).fillna(1.0).to_numpy()
+            notes.append(f"volatility sizing on: risk scaled by median/current ATR% over {cfg.risk.vol_lookback_bars} "
+                         f"bars, between {cfg.risk.vol_min_scale} and 1.0")
+        news_unknown = 0
 
         def close(t: Trade, price: float, when, reason: str, extra_cost: float = 0.0):
             nonlocal balance, consecutive_losses, cooldown_until
@@ -262,7 +282,7 @@ class BacktestEngine:
                 elif abs(entry - sig.stop_loss) < stops_level or abs(sig.take_profit - entry) < stops_level:
                     rejections.append(Rejection(row.time, "stop/target closer than broker stops level", sig.side))
                 else:
-                    vol = self._size(entry, sig.stop_loss, equity_now)
+                    vol = self._size(entry, sig.stop_loss, equity_now * pending_scale)
                     if vol <= 0:
                         rejections.append(Rejection(row.time, "minimum volume exceeds risk budget", sig.side))
                     elif self._margin(entry, vol) > equity_now:
@@ -351,6 +371,15 @@ class BacktestEngine:
             sig = self.s.generate_signal(i)
             if sig is None:
                 continue
+            if news is not None:
+                wk = close_time.isocalendar()[:2]
+                if news_weeks is not None and wk not in news_weeks:
+                    news_unknown += 1
+                else:
+                    blk = news.check(self.spec, close_time.to_pydatetime())
+                    if blk.blocked:
+                        rejections.append(Rejection(close_time, "news blackout", sig.side))
+                        continue
             if dd_locked:
                 rejections.append(Rejection(close_time, "equity drawdown lockout", sig.side))
             elif day_start_equity > 0 and (day_start_equity - equity) / day_start_equity * 100 >= cfg.risk.max_daily_loss_pct:
@@ -359,6 +388,7 @@ class BacktestEngine:
                 rejections.append(Rejection(close_time, "cooldown after consecutive losses", sig.side))
             else:
                 pending, pending_time = sig, close_time
+                pending_scale = float(vol_scale[i]) if vol_scale is not None else 1.0
 
         if pos is not None:
             last = rows[n - 1]
@@ -369,5 +399,7 @@ class BacktestEngine:
             close(pos, px, last.time + pd.Timedelta(minutes=self.tf),
                   "end of data" if n == len(rows) else "end of window")
 
+        if news is not None and news_unknown:
+            notes.append(f"news blackout not applied to {news_unknown} signal(s): no calendar data stored for their week")
         eq = pd.DataFrame(equity_rows, columns=["time", "equity", "balance"])
         return BacktestResult(trades, eq, rejections, n - i0, notes)

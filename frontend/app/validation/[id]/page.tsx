@@ -1,4 +1,5 @@
-import { Badge, Card, ErrorBox, PageHeader, Table, Td, TextLink, statusTone } from "@/components/ui";
+import { MonteCarloCard } from "@/components/MonteCarlo";
+import { Badge, Card, ErrorBox, Kv, PageHeader, Table, Td, TextLink, statusTone } from "@/components/ui";
 import { tryApi } from "@/lib/backend";
 import { num, pct, signClass, utc } from "@/lib/format";
 import type { SegmentSummary, ValidationDetail } from "@/lib/types";
@@ -94,6 +95,24 @@ export default async function ValidationDetailPage({ params }: { params: Promise
               </tr>
             ))}
           </Table>
+        </Card>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <MonteCarloCard mc={r.monte_carlo} title="Monte Carlo on development + validation trades" />
+        <Card title="Cost stress test (development + validation)">
+          {!r.cost_stress ? <p className="text-sm text-dim">Not part of this report (created before stress testing existed).</p> : (
+            <>
+              <Kv rows={[
+                ["Spread multiplier", `x${r.cost_stress.spread_multiplier}`],
+                ["Extra slippage", `${r.cost_stress.slippage_points} points (median recorded spread ${r.cost_stress.median_recorded_spread_points})`],
+                ["Trades under stress", r.cost_stress.result.closed_trades],
+                ["Expectancy under stress", <span key="e" className={signClass(r.cost_stress.result.expectancy_r)}>{num(r.cost_stress.result.expectancy_r, 3)} R</span>],
+                ["Profit factor under stress", num(r.cost_stress.result.profit_factor)],
+              ]} />
+              <p className="mt-3 text-xs text-faint">If a strategy only works with perfect costs, it does not work: real spreads widen around news, at rollover and in fast markets.</p>
+            </>
+          )}
         </Card>
       </div>
 

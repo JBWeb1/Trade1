@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -27,8 +27,8 @@ from ..integrations.news.filter import NewsBlackout
 from ..integrations.news.service import NewsDisabled, RefreshTooSoon, refresh_from_feed
 from ..integrations.news.store import coverage as news_coverage, load_events
 from ..markets.service import sync_instruments
-from ..models import (AuditLog, BacktestRun, BacktestTrade, IngestionRun, Instrument, StrategyVersion,
-                      ValidationReport)
+from ..models import (AuditLog, BacktestRun, BacktestTrade, IngestionRun, Instrument, ResearchReport,
+                      StrategyVersion, ValidationReport)
 from ..mt5.constants import Timeframe
 from ..mt5.gateway import MT5Error, MT5Gateway
 from .deps import get_gateway, require_token
@@ -421,3 +421,172 @@ def validation_detail(report_id: int, _: Auth, db: DB) -> dict:
     if r is None:
         raise HTTPException(404, "validation report not found")
     return {**_report_summary(r), "report": r.report, "data_fingerprint": r.data_fingerprint}
+
+
+# ---------------------------------------------------------------- research studies
+
+def _aware_utc(v: datetime) -> datetime:
+    if v.tzinfo is None:
+        raise ValueError("timestamps must include a timezone")
+    return v.astimezone(timezone.utc)
+
+
+class MultiMarketRequest(BaseModel):
+    symbols: list[str] = Field(min_length=2, max_length=30)
+    timeframe: Timeframe
+    htf: Timeframe | None = None
+    start: datetime
+    end: datetime
+    strategy: str = Field(min_length=1, max_length=64)
+    params: dict = Field(default_factory=dict)
+    config: BacktestConfig = BacktestConfig()
+    min_trades: int = Field(30, ge=1, le=10_000)
+
+    _utc = field_validator("start", "end")(classmethod(lambda cls, v: _aware_utc(v)))
+
+
+class PortfolioLeg(BaseModel):
+    symbol: str = Field(min_length=1, max_length=64)
+    timeframe: Timeframe
+    htf: Timeframe | None = None
+    strategy: str = Field(min_length=1, max_length=64)
+    params: dict = Field(default_factory=dict)
+
+
+class PortfolioRequest(BaseModel):
+    legs: list[PortfolioLeg] = Field(min_length=1, max_length=20)
+    start: datetime
+    end: datetime
+    config: BacktestConfig = BacktestConfig()
+    limits: dict = Field(default_factory=dict)
+
+    _utc = field_validator("start", "end")(classmethod(lambda cls, v: _aware_utc(v)))
+
+
+def _research_dict(r: ResearchReport, full: bool = False) -> dict:
+    d = {"id": r.id, "kind": r.kind, "status": r.status, "summary": r.summary, "error": r.error,
+         "created_at": r.created_at}
+    if full:
+        d.update(params=r.params, result=r.result)
+    return d
+
+
+@app.post("/api/research/multi-market")
+def research_multi_market(req: MultiMarketRequest, _: Auth, db: DB) -> dict:
+    from ..backtest.studies import run_multi_market
+    try:
+        rep = run_multi_market(db, symbols=req.symbols, timeframe=req.timeframe.value,
+                               htf=req.htf.value if req.htf else None, start=req.start, end=req.end,
+                               strategy_name=req.strategy, params=req.params, config=req.config,
+                               min_trades=req.min_trades)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return _research_dict(rep, full=True)
+
+
+@app.post("/api/research/portfolio")
+def research_portfolio(req: PortfolioRequest, _: Auth, db: DB) -> dict:
+    from ..backtest.portfolio import PortfolioLimits
+    from ..backtest.studies import run_portfolio
+    try:
+        limits = PortfolioLimits(**{"starting_balance": req.config.starting_balance,
+                                    "risk_per_trade_pct": req.config.risk.risk_per_trade_pct, **req.limits})
+        rep = run_portfolio(db, legs=[{**leg.model_dump(), "timeframe": leg.timeframe.value,
+                                       "htf": leg.htf.value if leg.htf else None} for leg in req.legs],
+                            start=req.start, end=req.end, config=req.config, limits=limits)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return _research_dict(rep, full=True)
+
+
+@app.post("/api/research/tick-check/{backtest_id}")
+def research_tick_check(backtest_id: int, _: Auth, db: DB, gw: GW,
+                        max_trades: int = Query(300, ge=1, le=5000), only_ambiguous: bool = False) -> dict:
+    from ..backtest.studies import run_tick_check
+    _get_run(db, backtest_id)
+    rep = run_tick_check(db, gw, backtest_run_id=backtest_id, max_trades=max_trades, only_ambiguous=only_ambiguous)
+    return _research_dict(rep, full=True)
+
+
+@app.get("/api/research")
+def research_list(_: Auth, db: DB, kind: str | None = Query(None, max_length=32),
+                  limit: int = Query(100, ge=1, le=500)) -> dict:
+    q = select(ResearchReport)
+    if kind:
+        q = q.where(ResearchReport.kind == kind)
+    rows = db.scalars(q.order_by(ResearchReport.id.desc()).limit(limit)).all()
+    return {"items": [_research_dict(r) for r in rows]}
+
+
+@app.get("/api/research/{report_id}")
+def research_detail(report_id: int, _: Auth, db: DB) -> dict:
+    r = db.get(ResearchReport, report_id)
+    if r is None:
+        raise HTTPException(404, "research report not found")
+    return _research_dict(r, full=True)
+
+
+# ---------------------------------------------------------------- journal export, audit, settings
+
+JOURNAL_COLUMNS = ["id", "side", "signal_time", "entry_time", "exit_time", "entry_price", "exit_price", "volume",
+                   "stop_loss", "take_profit", "exit_reason", "gross_pnl", "commission", "swap", "spread_cost",
+                   "slippage_cost", "net_pnl", "planned_risk_money", "bars_held", "ambiguous_bar", "regime",
+                   "rationale"]
+
+
+@app.get("/api/backtests/{run_id}/journal")
+def backtest_journal(run_id: int, _: Auth, db: DB, format: str = Query("csv", pattern="^(csv|json)$")):
+    """Trade journal export (one row per simulated trade, with context) for external journal apps."""
+    import csv
+    import io
+
+    run = _get_run(db, run_id)
+    version = db.get(StrategyVersion, run.strategy_version_id)
+    trades = db.scalars(select(BacktestTrade).where(BacktestTrade.run_id == run_id)
+                        .order_by(BacktestTrade.entry_time)).all()
+    context = {"source": "Trade1 Trading AI", "result_kind": run.result_kind, "backtest_run_id": run.id,
+               "symbol": run.symbol, "timeframe": run.timeframe, "strategy": version.name,
+               "strategy_version": version.version, "params_hash": version.params_hash,
+               "account_currency": (run.config or {}).get("account_currency")}
+    rows = [{c: getattr(t, c) for c in JOURNAL_COLUMNS} for t in trades]
+    if format == "json":
+        return {"context": context, "trades": rows}
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=list(context) + JOURNAL_COLUMNS)
+    w.writeheader()
+    for r in rows:
+        w.writerow({**context, **{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()}})
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="trade1_backtest_{run_id}_journal.csv"'})
+
+
+@app.get("/api/audit")
+def audit_log(_: Auth, db: DB, action: str | None = Query(None, max_length=64),
+              limit: int = Query(200, ge=1, le=2000)) -> dict:
+    q = select(AuditLog)
+    if action:
+        q = q.where(AuditLog.action.like(f"{action}%"))
+    rows = db.scalars(q.order_by(AuditLog.id.desc()).limit(limit)).all()
+    return {"items": [{"id": r.id, "ts": r.ts, "actor": r.actor, "action": r.action, "details": r.details}
+                      for r in rows]}
+
+
+@app.get("/api/settings")
+def settings_view(_: Auth, settings: Settings = Depends(get_settings)) -> dict:
+    """Effective settings. Secrets are reported only as set / not set."""
+    return {
+        "execution_mode": settings.execution_mode.value,
+        "environment": settings.env,
+        "database": settings.database_url.split("://", 1)[0],
+        "api_token": "set" if settings.api_token else "NOT SET",
+        "mt5": {"path": settings.mt5_path or "(terminal default)", "login": "set" if settings.mt5_login else
+                "(use the terminal's logged-in account)", "password": "set" if settings.mt5_password else "not set",
+                "server": settings.mt5_server or "(terminal default)",
+                "server_utc_offset_hours": settings.mt5_server_utc_offset_hours},
+        "news": {"feed_url": "set" if settings.news_feed_url else "not set",
+                 "min_refresh_minutes": settings.news_min_refresh_minutes,
+                 "blackout_before_min": settings.news_blackout_before_min,
+                 "blackout_after_min": settings.news_blackout_after_min,
+                 "impacts": list(settings.news_impacts), "categories": list(settings.news_categories)},
+        "how_to_change": "edit backend\\.env and restart the backend (start_trade1.bat)",
+    }

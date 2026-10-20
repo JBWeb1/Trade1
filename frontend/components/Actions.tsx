@@ -169,3 +169,124 @@ export function BacktestForm({ symbols, strategies }: { symbols: string[]; strat
     </form>
   );
 }
+
+export function MultiMarketForm({ symbols, strategies }: { symbols: string[]; strategies: string[] }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const today = new Date().toISOString().slice(0, 10);
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const picked = f.getAll("symbols").map(String);
+    if (picked.length < 2) { setError("Pick at least two symbols."); return; }
+    setBusy(true); setError(null);
+    try {
+      const r = await proxyPost<{ id: number }>("research/multi-market", {
+        symbols: picked, timeframe: f.get("timeframe"), htf: f.get("htf") || null, strategy: f.get("strategy"),
+        start: `${f.get("start")}T00:00:00Z`, end: `${f.get("end")}T00:00:00Z`,
+        config: { costs: { commission_per_lot_per_side: Number(f.get("commission")) } },
+      });
+      router.push(`/research/${r.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="grid gap-3 sm:grid-cols-4">
+      <div className="sm:col-span-4">
+        <span className="mb-1 block text-xs text-dim">Symbols (with stored history)</span>
+        <div className="flex flex-wrap gap-2">
+          {symbols.length === 0 && <span className="text-sm text-faint">No stored history yet.</span>}
+          {symbols.map((s) => (
+            <label key={s} className="flex items-center gap-1.5 rounded border border-line px-2 py-1 text-sm">
+              <input type="checkbox" name="symbols" value={s} /> {s}
+            </label>
+          ))}
+        </div>
+      </div>
+      <Field label="Strategy"><select name="strategy" className={input}>{strategies.map((s) => <option key={s}>{s}</option>)}</select></Field>
+      <Field label="Timeframe"><select name="timeframe" className={input} defaultValue="H1">{TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}</select></Field>
+      <Field label="Higher timeframe"><select name="htf" className={input} defaultValue="H4"><option value="">none</option>{TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}</select></Field>
+      <Field label="Commission / lot / side"><input name="commission" type="number" min="0" step="any" defaultValue={0} className={input} /></Field>
+      <Field label="Start (UTC)"><input name="start" type="date" required className={input} defaultValue="2024-01-01" /></Field>
+      <Field label="End (UTC)"><input name="end" type="date" required className={input} defaultValue={today} /></Field>
+      <div className="flex items-end sm:col-span-2"><button className={button} disabled={busy}>{busy ? "Running on every symbol…" : "Run multi-market test"}</button></div>
+      <div className="sm:col-span-4"><Message error={error} /></div>
+    </form>
+  );
+}
+
+type Leg = { symbol: string; timeframe: string; htf: string; strategy: string };
+
+export function PortfolioForm({ symbols, strategies }: { symbols: string[]; strategies: string[] }) {
+  const router = useRouter();
+  const [legs, setLegs] = useState<Leg[]>([{ symbol: symbols[0] ?? "", timeframe: "H1", htf: "", strategy: strategies[0] ?? "" }]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const today = new Date().toISOString().slice(0, 10);
+  const update = (k: number, patch: Partial<Leg>) => setLegs(legs.map((l, j) => (j === k ? { ...l, ...patch } : l)));
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    setBusy(true); setError(null);
+    try {
+      const r = await proxyPost<{ id: number }>("research/portfolio", {
+        legs: legs.map((l) => ({ symbol: l.symbol, timeframe: l.timeframe, htf: l.htf || null, strategy: l.strategy })),
+        start: `${f.get("start")}T00:00:00Z`, end: `${f.get("end")}T00:00:00Z`,
+        config: { starting_balance: Number(f.get("balance")), risk: { risk_per_trade_pct: Number(f.get("risk")) } },
+        limits: {
+          max_open_positions: Number(f.get("max_positions")), max_total_open_risk_pct: Number(f.get("max_risk")),
+          max_currency_exposure: Number(f.get("max_ccy")), max_daily_loss_pct: Number(f.get("daily_loss")),
+        },
+      });
+      router.push(`/research/${r.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <div className="space-y-2">
+        {legs.map((l, k) => (
+          <div key={k} className="grid gap-2 sm:grid-cols-[1fr_1fr_6rem_6rem_auto]">
+            <input aria-label={`Leg ${k + 1} symbol`} list="pf-symbols" value={l.symbol} required maxLength={64}
+              onChange={(e) => update(k, { symbol: e.target.value })} className={input} placeholder="Symbol" />
+            <select aria-label={`Leg ${k + 1} strategy`} value={l.strategy} onChange={(e) => update(k, { strategy: e.target.value })} className={input}>
+              {strategies.map((s) => <option key={s}>{s}</option>)}
+            </select>
+            <select aria-label={`Leg ${k + 1} timeframe`} value={l.timeframe} onChange={(e) => update(k, { timeframe: e.target.value })} className={input}>
+              {TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}
+            </select>
+            <select aria-label={`Leg ${k + 1} higher timeframe`} value={l.htf} onChange={(e) => update(k, { htf: e.target.value })} className={input}>
+              <option value="">no HTF</option>{TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}
+            </select>
+            <button type="button" className={secondaryButton} disabled={legs.length === 1}
+              onClick={() => setLegs(legs.filter((_, j) => j !== k))}>Remove</button>
+          </div>
+        ))}
+        <datalist id="pf-symbols">{symbols.map((s) => <option key={s} value={s} />)}</datalist>
+        <button type="button" className={secondaryButton} disabled={legs.length >= 10}
+          onClick={() => setLegs([...legs, { symbol: "", timeframe: "H1", htf: "", strategy: strategies[0] ?? "" }])}>Add leg</button>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Field label="Start (UTC)"><input name="start" type="date" required className={input} defaultValue="2024-01-01" /></Field>
+        <Field label="End (UTC)"><input name="end" type="date" required className={input} defaultValue={today} /></Field>
+        <Field label="Starting balance"><input name="balance" type="number" min="1" step="any" defaultValue={10000} className={input} /></Field>
+        <Field label="Risk per trade %"><input name="risk" type="number" min="0.01" max="5" step="0.01" defaultValue={0.25} className={input} /></Field>
+        <Field label="Max open positions"><input name="max_positions" type="number" min="1" max="50" defaultValue={3} className={input} /></Field>
+        <Field label="Max total open risk %"><input name="max_risk" type="number" min="0.1" max="20" step="0.05" defaultValue={1} className={input} /></Field>
+        <Field label="Max same-currency bets" hint="correlation limit"><input name="max_ccy" type="number" min="1" max="10" defaultValue={2} className={input} /></Field>
+        <Field label="Daily loss limit %"><input name="daily_loss" type="number" min="0.1" max="100" step="0.1" defaultValue={1} className={input} /></Field>
+      </div>
+      <button className={button} disabled={busy}>{busy ? "Running portfolio…" : "Run portfolio backtest"}</button>
+      <Message error={error} />
+    </form>
+  );
+}

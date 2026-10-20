@@ -55,6 +55,7 @@ export type Metrics = {
   by_month: Breakdown; by_side: Breakdown; by_regime?: Breakdown; sample_warning: string | null; notes: string[];
   strategy?: { name: string; version: string; params: Record<string, unknown>; params_hash: string };
   final_equity?: number;
+  monte_carlo?: MonteCarlo | null;
 };
 
 export type BacktestDetail = BacktestSummary & {
@@ -97,6 +98,8 @@ export type ValidationReportBody = {
   sensitivity: { step: number; positive_fraction: number | null;
     runs: { param: string; value: unknown; closed_trades: number; expectancy_r: number | null; profit_factor: number | null }[] };
   disclaimer: string; strategy?: { name: string; version: string; params_hash: string; params: Record<string, unknown> };
+  monte_carlo?: MonteCarlo | null;
+  cost_stress?: { spread_multiplier: number; slippage_points: number; median_recorded_spread_points: number; result: SegmentSummary };
 };
 
 export type ValidationDetail = ValidationSummary & { report: ValidationReportBody; data_fingerprint: Record<string, unknown> };
@@ -117,3 +120,19 @@ export type Diagnostics = {
 };
 
 export type NewsEvent = { provider: string; event_time: string; currency: string; title: string; impact: string; forecast: string | null; previous: string | null };
+
+export type MonteCarlo = {
+  simulations: number; trades_per_simulation: number; seed: number; risk_pct: number; method: string;
+  max_drawdown_pct: { p50: number; p95: number; p99: number };
+  final_return_pct: { p5: number; p50: number; p95: number };
+  longest_losing_streak: { p50: number; p95: number };
+  probability_of_loss: number; assumptions: string;
+  [k: string]: unknown;
+};
+
+export type ResearchSummary = { id: number; kind: "multi_market" | "portfolio" | "tick_check"; status: string;
+  summary: string | null; error: string | null; created_at: string };
+
+export type ResearchDetail = ResearchSummary & { params: Record<string, unknown>; result: Record<string, unknown> };
+
+export type AuditEntry = { id: number; ts: string; actor: string; action: string; details: Record<string, unknown> };

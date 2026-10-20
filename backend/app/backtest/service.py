@@ -33,6 +33,17 @@ def fingerprint(df: pd.DataFrame) -> dict:
             "last": df["time"].iloc[-1].isoformat(), "sha256_16": h}
 
 
+def news_for(session: Session, config: BacktestConfig, start: datetime, end: datetime):
+    """(NewsBlackout, covered ISO weeks) when the config asks for a news blackout, else (None, None)."""
+    if not config.news_blackout:
+        return None, None
+    from ..integrations.news.filter import NewsBlackout
+    from ..integrations.news.store import load_events
+    events = load_events(session, start - pd.Timedelta(days=2), end + pd.Timedelta(days=2))
+    weeks = {e.event_time.isocalendar()[:2] for e in events}
+    return NewsBlackout(events, config.news_minutes_before, config.news_minutes_after), weeks
+
+
 def get_or_create_version(session: Session, strategy) -> StrategyVersion:
     meta = strategy.get_strategy_metadata()
     row = session.scalars(select(StrategyVersion).where(
@@ -95,8 +106,14 @@ def run_backtest(session: Session, *, symbol: str, timeframe: str, start: dateti
                               TIMEFRAMES[htf_tf].minutes if htf_tf else None)
         if config.account_currency != (spec.get("account_currency") or config.account_currency):
             raise BacktestError("account currency differs from the currency the spec was captured in")
-        result = BacktestEngine(strategy, spec, config, TIMEFRAMES[tf].minutes).run(df)
+        news, news_weeks = news_for(session, config, start, end)
+        result = BacktestEngine(strategy, spec, config, TIMEFRAMES[tf].minutes).run(
+            df, news=news, news_weeks=news_weeks)
         metrics = compute_metrics(result, config.starting_balance)
+        from .research import monte_carlo
+        metrics["monte_carlo"] = monte_carlo(
+            [t.net_pnl / t.planned_risk_money for t in result.trades if t.planned_risk_money > 0],
+            config.risk.risk_per_trade_pct)
         metrics["label"] = RESULT_LABEL
         metrics["strategy"] = strategy.get_strategy_metadata()
         run.metrics = metrics
@@ -171,8 +188,9 @@ def run_validation_report(session: Session, *, symbol: str, timeframe: str, star
         rep.oos_prior_uses = len(prior)
         rep.data_fingerprint = {"primary": fingerprint(primary),
                                 "htf": fingerprint(htf_df) if htf_df is not None else None}
+        news, news_weeks = news_for(session, config, start, end)
         inp = Inputs(strategy_name, strategy.params.model_dump(), primary, htf_df, TIMEFRAMES[tf].minutes,
-                     TIMEFRAMES[htf_tf].minutes if htf_tf else None, spec, config)
+                     TIMEFRAMES[htf_tf].minutes if htf_tf else None, spec, config, news, news_weeks)
         report = run_validation(inp, start, end, policy, rep.oos_prior_uses)
         report["strategy"] = strategy.get_strategy_metadata()
         rep.report = report

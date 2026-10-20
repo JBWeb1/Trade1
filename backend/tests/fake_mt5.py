@@ -131,9 +131,18 @@ class FakeMT5:
             out[col] = sel[col].to_numpy() if col in sel else 0
         return out
 
+    TICK_DTYPE = [("time", "<i8"), ("bid", "<f8"), ("ask", "<f8"), ("time_msc", "<i8")]
+
+    def set_ticks(self, name: str, ticks: list[tuple[datetime, float, float]]):
+        self.ticks = getattr(self, "ticks", {})
+        self.ticks[name] = ticks
+
     def copy_ticks_range(self, name, start, end, flags):
-        return np.zeros(0, dtype=[("time", "<i8"), ("bid", "<f8"), ("ask", "<f8"),
-                                  ("time_msc", "<i8")])
+        rows = [t for t in getattr(self, "ticks", {}).get(name, []) if start <= t[0] < end]
+        out = np.zeros(len(rows), dtype=self.TICK_DTYPE)
+        for k, (t, bid, ask) in enumerate(rows):
+            out[k] = (int(t.timestamp()), bid, ask, int(t.timestamp() * 1000))
+        return out
 
     # account state
     def positions_get(self):

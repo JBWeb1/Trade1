@@ -12,3 +12,4 @@ node_modules/
 backend/trade1.db
 trade1_check_report.txt
 trade1_backtest_*.txt
+backups/

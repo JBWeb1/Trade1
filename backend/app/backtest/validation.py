@@ -48,6 +48,12 @@ class ValidationPolicy(BaseModel):
     sensitivity_step: float = Field(0.2, gt=0, lt=1)
     wf_grid_params: int = Field(2, ge=0, le=3)  # how many tunable params the WF grid varies
     wf_min_in_sample_trades: int = Field(10, ge=1)
+    # Monte Carlo on development+validation trades: 95th-percentile drawdown must stay within limit
+    mc_simulations: int = Field(2000, ge=100, le=50_000)
+    max_mc_p95_drawdown_pct: float = Field(25.0, gt=0)
+    # Cost stress on development+validation: spread x multiplier, plus slippage = median spread
+    stress_spread_multiplier: float = Field(2.0, ge=1.0, le=10)
+    stress_extra_slippage_spreads: float = Field(1.0, ge=0, le=10)
 
 
 @dataclass
@@ -60,13 +66,16 @@ class Inputs:
     htf_minutes: int | None
     spec: dict
     config: BacktestConfig
+    news: object | None = None          # NewsBlackout, when config.news_blackout is on
+    news_weeks: set | None = None
 
 
-def _segment(inp: Inputs, params: dict, start, end) -> dict:
+def _segment(inp: Inputs, params: dict, start, end, config: BacktestConfig | None = None) -> dict:
     s = get_strategy(inp.strategy_name, params)
     s.instrument = inp.spec
     df = s.prepare(inp.primary, inp.htf, inp.primary_minutes, inp.htf_minutes)
-    res = BacktestEngine(s, inp.spec, inp.config, inp.primary_minutes).run(df, start, end)
+    res = BacktestEngine(s, inp.spec, config or inp.config, inp.primary_minutes).run(
+        df, start, end, news=inp.news, news_weeks=inp.news_weeks)
     m = compute_metrics(res, inp.config.starting_balance)
     rs = [t.net_pnl / t.planned_risk_money for t in res.trades if t.planned_risk_money > 0]
     m["r_multiples"] = rs
@@ -191,6 +200,23 @@ def run_validation(inp: Inputs, start: datetime, end: datetime, policy: Validati
     sensitivity = {"step": policy.sensitivity_step, "runs": sens,
                    "positive_fraction": round(sens_pos / len(sens_valid), 3) if sens_valid else None}
 
+    # ---- Monte Carlo on development + validation trades
+    from .research import monte_carlo
+    mc = monte_carlo(dev["r_multiples"] + val["r_multiples"], inp.config.risk.risk_per_trade_pct,
+                     n_sims=policy.mc_simulations)
+
+    # ---- cost stress on development + validation
+    in_window = inp.primary[(inp.primary["time"] >= pd.Timestamp(start)) & (inp.primary["time"] < val_end)]
+    median_spread = float(in_window["spread_points"].median()) if len(in_window) else 0.0
+    costs = inp.config.costs.model_copy(update={
+        "spread_multiplier": min(10.0, inp.config.costs.spread_multiplier * policy.stress_spread_multiplier),
+        "slippage_points": inp.config.costs.slippage_points + policy.stress_extra_slippage_spreads * median_spread,
+    })
+    stressed_cfg = inp.config.model_copy(update={"costs": costs})
+    stressed = _segment(inp, params, start, val_end, stressed_cfg)
+    stress = {"spread_multiplier": costs.spread_multiplier, "slippage_points": round(costs.slippage_points, 3),
+              "median_recorded_spread_points": median_spread, "result": _summary(stressed)}
+
     # ---- verdict
     total = dev["closed_trades"] + val["closed_trades"] + oos["closed_trades"]
     checks = []
@@ -217,6 +243,13 @@ def run_validation(inp: Inputs, start: datetime, end: datetime, policy: Validati
     check("parameter sensitivity", (sensitivity["positive_fraction"] or 0) >= policy.min_sensitivity_positive_fraction,
           f"{sensitivity['positive_fraction']} of perturbations positive >= "
           f"{policy.min_sensitivity_positive_fraction}", "robustness")
+    check("Monte Carlo 95th-percentile drawdown",
+          mc is not None and mc["max_drawdown_pct"]["p95"] <= policy.max_mc_p95_drawdown_pct,
+          f"{mc['max_drawdown_pct']['p95'] if mc else 'n/a (<10 trades)'}% <= {policy.max_mc_p95_drawdown_pct}%",
+          "robustness")
+    check("still profitable with stressed costs", (stressed["expectancy_r"] or -1) > 0,
+          f"{stressed['expectancy_r']} R > 0 with spread x{costs.spread_multiplier:g} and "
+          f"+{costs.slippage_points:.1f} pts slippage", "robustness")
     check("final out-of-sample used for the first time", oos_prior_uses == 0,
           f"previous uses of this out-of-sample window: {oos_prior_uses}", "protocol")
 
@@ -233,6 +266,8 @@ def run_validation(inp: Inputs, start: datetime, end: datetime, policy: Validati
         "oos_t_stat": _t_stat(oos["r_multiples"]),
         "walk_forward": wf,
         "sensitivity": sensitivity,
+        "monte_carlo": mc,
+        "cost_stress": stress,
         "policy": policy.model_dump(),
         "disclaimer": ("Screening thresholds are engineering defaults. A PASSED verdict means the "
                        "strategy survived these tests on this data, not that it will be profitable. "

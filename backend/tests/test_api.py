@@ -99,6 +99,8 @@ def test_ingest_validation(client, body):
 REVIEWED_WRITE_ROUTES = {
     ("POST", "/api/markets/sync"), ("POST", "/api/market-data/ingest"), ("POST", "/api/news/refresh"),
     ("POST", "/api/strategies"), ("POST", "/api/backtests"), ("POST", "/api/validation/{backtest_id}"),
+    ("POST", "/api/research/multi-market"), ("POST", "/api/research/portfolio"),
+    ("POST", "/api/research/tick-check/{backtest_id}"),
 }
 
 

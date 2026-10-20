@@ -6,6 +6,9 @@
     python -m app.cli coverage
     python -m app.cli backtest --symbol EURUSDm --timeframe H1 --htf H4 --start 2023-01-01 --end 2025-01-01
     python -m app.cli validate --symbol EURUSDm --timeframe H1 --htf H4 --start 2023-01-01 --end 2025-01-01
+    python -m app.cli multi-market --symbols XAUUSDm,EURUSDm,GBPUSDm --timeframe H1 --htf H4 --start ... --end ...
+    python -m app.cli portfolio --legs legs.json --start 2024-01-01 --end 2025-01-01
+    python -m app.cli tick-check --backtest-id 12
     python -m app.cli news-check            # fetch + validate the configured news feed (no save)
     python -m app.cli news-fetch            # fetch and store
     python -m app.cli news-import --file ff_calendar_thisweek.json
@@ -136,6 +139,12 @@ def cmd_backtest(_gw, args) -> int:
                 ("Exit reasons", m["exit_reasons"]), ("Rejected signals", m["rejections"])]
         for k, v in rows:
             print(f"  {k:<38} {v}")
+        mc = m.get("monte_carlo")
+        if mc:
+            print(f"\n  Monte Carlo ({mc['simulations']} reshuffles of these trades): max drawdown median "
+                  f"{mc['max_drawdown_pct']['p50']}%, 95th pct {mc['max_drawdown_pct']['p95']}%; "
+                  f"losing streak 95th pct {mc['longest_losing_streak']['p95']}; "
+                  f"chance of ending negative {mc['probability_of_loss'] * 100:.1f}%")
         if m.get("sample_warning"):
             print(f"\nWARNING: {m['sample_warning']}")
         for n in m["notes"]:
@@ -177,6 +186,80 @@ def cmd_validate(_gw, args) -> int:
             print(f"  [{'PASS' if c['passed'] else 'FAIL'}] {c['check']}: {c['detail']}")
         print(f"\nVERDICT: {rep.verdict}")
         print(r["disclaimer"])
+    return 0
+
+
+def _print_research(rep) -> int:
+    if rep.status != "completed":
+        print(f"{rep.kind.upper()} FAILED (report {rep.id}): {rep.error}")
+        return 1
+    print(f"\n{rep.kind.replace('_', ' ').upper()} report #{rep.id}: {rep.summary}")
+    return 0
+
+
+def cmd_multi_market(_gw, args) -> int:
+    from .backtest.studies import run_multi_market
+    cfg = _backtest_config(argparse.Namespace(**{**vars(args), "symbol": args.symbols.split(",")[0]}))
+    if cfg is None:
+        return 1
+    with session_scope() as s:
+        rep = run_multi_market(s, symbols=[x.strip() for x in args.symbols.split(",") if x.strip()],
+                               timeframe=args.timeframe, htf=args.htf, start=_date(args.start), end=_date(args.end),
+                               strategy_name=args.strategy, params=json.loads(args.params) if args.params else {},
+                               config=cfg, min_trades=args.min_trades)
+        code = _print_research(rep)
+        if code == 0:
+            print(f"\n  {'symbol':<14}{'trades':>8}{'exp R':>9}{'PF':>8}{'ret %':>9}{'maxDD %':>9}")
+            for r in rep.result["symbols"]:
+                if "error" in r:
+                    print(f"  {r['symbol']:<14}  error: {r['error']}")
+                else:
+                    print(f"  {r['symbol']:<14}{r['closed_trades']:>8}{str(r['expectancy_r']):>9}"
+                          f"{str(r['profit_factor']):>8}{str(r['net_return_pct']):>9}{str(r['max_drawdown_pct']):>9}")
+        return code
+
+
+def cmd_portfolio(_gw, args) -> int:
+    from pathlib import Path
+
+    from .backtest.engine import BacktestConfig, RiskModel
+    from .backtest.portfolio import PortfolioLimits
+    from .backtest.studies import run_portfolio
+    legs = json.loads(Path(args.legs).read_text())
+    cfg = BacktestConfig(starting_balance=args.balance, risk=RiskModel(risk_per_trade_pct=args.risk))
+    limits = PortfolioLimits(starting_balance=args.balance, risk_per_trade_pct=args.risk,
+                             max_open_positions=args.max_positions, max_currency_exposure=args.max_currency_exposure)
+    with session_scope() as s:
+        rep = run_portfolio(s, legs=legs, start=_date(args.start), end=_date(args.end), config=cfg, limits=limits)
+        code = _print_research(rep)
+        if code == 0:
+            r = rep.result
+            print(f"  rejected by limits: {r['rejected']}")
+            for leg in r["legs"]:
+                print(f"  leg {leg['leg']}: " + (leg.get("error") or f"{leg['trades_standalone']} trades standalone, "
+                                                  f"{leg['expectancy_r_standalone']} R"))
+            if r.get("monte_carlo"):
+                print(f"  Monte Carlo 95th-percentile drawdown: {r['monte_carlo']['max_drawdown_pct']['p95']}%")
+        return code
+
+
+def cmd_tick_check(gw, args) -> int:
+    from .backtest.studies import run_tick_check
+    with session_scope() as s:
+        rep = run_tick_check(s, gw, backtest_run_id=args.backtest_id, max_trades=args.max_trades,
+                             only_ambiguous=args.only_ambiguous)
+        code = _print_research(rep)
+        if code == 0:
+            print(f"  {rep.result['coverage']}; R change if ticks are right: {rep.result['r_change_if_ticks_are_right']}")
+        return code
+
+
+def cmd_backup(_gw, args) -> int:
+    from pathlib import Path
+
+    from .backup import backup_database
+    out = backup_database(get_settings().database_url, Path(args.dest), keep=args.keep)
+    print(f"Backup written: {out}")
     return 0
 
 
@@ -248,6 +331,27 @@ def main(argv: list[str] | None = None) -> int:
     for a in p._actions:  # same options as `backtest`
         if a.dest != "help":
             v._add_action(a)
+    mm = sub.add_parser("multi-market")
+    for a in p._actions:
+        if a.dest not in ("help", "symbol"):
+            mm._add_action(a)
+    mm.add_argument("--symbols", required=True, help="comma-separated, e.g. XAUUSDm,EURUSDm,GBPUSDm")
+    mm.add_argument("--min-trades", type=int, default=30)
+    pf = sub.add_parser("portfolio")
+    pf.add_argument("--legs", required=True, help='JSON file: [{"symbol":..,"timeframe":..,"strategy":..}, ...]')
+    pf.add_argument("--start", required=True)
+    pf.add_argument("--end", required=True)
+    pf.add_argument("--balance", type=float, default=10_000)
+    pf.add_argument("--risk", type=float, default=0.25)
+    pf.add_argument("--max-positions", type=int, default=3)
+    pf.add_argument("--max-currency-exposure", type=int, default=2)
+    tc = sub.add_parser("tick-check")
+    tc.add_argument("--backtest-id", type=int, required=True)
+    tc.add_argument("--max-trades", type=int, default=300)
+    tc.add_argument("--only-ambiguous", action="store_true")
+    bk = sub.add_parser("backup")
+    bk.add_argument("--dest", default="backups")
+    bk.add_argument("--keep", type=int, default=14)
     sub.add_parser("news-check")
     sub.add_parser("news-fetch")
     p = sub.add_parser("news-import")
@@ -258,7 +362,8 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(settings.log_level)
     gw = MT5Gateway(settings)
     handlers = {"mt5-check": cmd_mt5_check, "discover": cmd_discover, "ingest": cmd_ingest,
-                "coverage": cmd_coverage, "backtest": cmd_backtest, "validate": cmd_validate, "news-check": cmd_news_check,
+                "coverage": cmd_coverage, "backtest": cmd_backtest, "validate": cmd_validate,
+                "multi-market": cmd_multi_market, "portfolio": cmd_portfolio, "tick-check": cmd_tick_check, "backup": cmd_backup, "news-check": cmd_news_check,
                 "news-fetch": cmd_news_fetch, "news-import": cmd_news_import}
     try:
         return handlers[args.cmd](gw, args)

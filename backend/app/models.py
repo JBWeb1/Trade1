@@ -209,3 +209,17 @@ class ValidationReport(Base):
     reasons: Mapped[list] = mapped_column(JsonType, default=list)
     report: Mapped[dict] = mapped_column(JsonType, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class ResearchReport(Base):
+    """Multi-market, tick-check and portfolio studies."""
+
+    __tablename__ = "research_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)  # multi_market | tick_check | portfolio
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    summary: Mapped[str | None] = mapped_column(String(255))
+    params: Mapped[dict] = mapped_column(JsonType, default=dict)
+    result: Mapped[dict] = mapped_column(JsonType, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)

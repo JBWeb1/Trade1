@@ -110,14 +110,29 @@ def test_strategy_params_validated_and_hash_stable():
     ("range_breakout", {"range_bars": 12, "max_range_atr": 8}),
     ("liquidity_sweep", {"lookback": 40}),
     ("trend_continuation", {"breakout_lookback": 5, "use_htf_filter": False, "regime_filter": "trending"}),
+    ("trend_pullback", {"slow_ema": 50, "touch_atr": 0.5}),
 ])
 def test_all_strategies_are_truncation_invariant(name, params):
     h1 = random_walk(1200, 60, seed=3)
+    _check_truncation(name, params, h1, 60, (500, 901))
+
+
+@pytest.mark.parametrize("name,params", [
+    ("session_open_breakout", {"session": "london"}),
+    ("session_open_breakout", {"session": "new_york", "opening_minutes": 30}),
+    ("asian_range_breakout", {"max_range_atr": 20}),
+])
+def test_session_strategies_are_truncation_invariant(name, params):
+    m15 = random_walk(96 * 60, 15, seed=8)  # 60 days of M15, crosses the March DST change
+    _check_truncation(name, params, m15, 15, (2000, 3333, 5000))
+
+
+def _check_truncation(name, params, h1, minutes, cuts):
 
     def sigs(df):
         s = get_strategy(name, params)
         s.instrument = {"point": 0.00001}
-        s.prepare(df, None, 60, None)
+        s.prepare(df, None, minutes, None)
         out = {}
         for i in range(s.warmup_bars(), len(s.df)):
             sig = s.generate_signal(i)
@@ -127,7 +142,7 @@ def test_all_strategies_are_truncation_invariant(name, params):
 
     full = sigs(h1)
     assert len(full) >= 5, f"{name} produced too few signals for a meaningful test"
-    for cut in (500, 901):
+    for cut in cuts:
         part = sigs(h1.iloc[:cut])
         assert part == {t: v for t, v in full.items() if t <= h1["time"].iloc[cut - 1]}
 
@@ -141,3 +156,20 @@ def test_regime_labels_are_causal_and_known():
     assert (full.iloc[:500] == part).all()
     assert set(full.unique()) <= {"trending", "ranging", "high_volatility", "unknown"}
     assert {"trending", "ranging"} <= set(full.unique())
+
+
+def test_session_times_follow_daylight_saving():
+    """London open is 08:00 UTC in winter and 07:00 UTC in summer (BST)."""
+    from app.backtest.strategies.session import SessionOpenBreakout
+    s = SessionOpenBreakout({"session": "london", "opening_minutes": 60})
+    winter = random_walk(96 * 3, 15, start=datetime(2025, 1, 6, tzinfo=timezone.utc))
+    summer = random_walk(96 * 3, 15, start=datetime(2025, 7, 7, tzinfo=timezone.utc))
+    for data, utc_hour in ((winter, 8), (summer, 7)):
+        df = s.prepare(data, None, 15, None)
+        first_range_bar = df[df["in_range"]]["time"].iloc[0]
+        assert first_range_bar.hour == utc_hour
+
+
+def test_session_strategy_rejects_slow_timeframes():
+    with pytest.raises(ValueError):
+        get_strategy("asian_range_breakout").prepare(random_walk(100, 240), None, 240, None)

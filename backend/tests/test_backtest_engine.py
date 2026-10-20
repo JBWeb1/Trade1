@@ -199,3 +199,53 @@ def test_target_r_is_anchored_to_the_actual_fill():
     assert t.entry_price == pytest.approx(1.1003)
     assert t.take_profit == pytest.approx(1.1049) and t.exit_reason == "take profit"
     assert t.bars_held == 2
+
+
+def _with_atr(df, calm=0.0010, wild=0.0040, wild_from=None):
+    df = df.copy()
+    df["atr"] = calm
+    if wild_from is not None:
+        df.loc[wild_from:, "atr"] = wild
+    return df
+
+
+def test_volatility_sizing_shrinks_positions_when_market_is_wild():
+    ohlc = [FLAT] * 120 + [FLAT, FLAT, (1.1000, 1.1030, 1.0999, 1.1025), FLAT]
+    base = {"risk_per_trade_pct": 1.0, "min_reward_risk": 0.5}
+
+    def vol_for(volatility_sizing, wild_from):
+        df = _with_atr(bars(ohlc), wild_from=wild_from)
+        s = Scripted({120: ("buy", 1.0980, 1.1022)})
+        s.prepare(df, None, 60, None)
+        cfg = BacktestConfig(risk=RiskModel(**base, volatility_sizing=volatility_sizing,
+                                            vol_lookback_bars=100, vol_min_scale=0.4))
+        res = BacktestEngine(s, SPEC, cfg, 60).run(df)
+        return res.trades[0].volume, res.notes
+
+    normal, _ = vol_for(False, None)
+    calm, _ = vol_for(True, None)
+    wild, notes = vol_for(True, 118)  # ATR jumps 4x just before the signal
+    assert calm == pytest.approx(normal)
+    assert wild == pytest.approx(round(normal * 0.4, 2), abs=0.011)
+    assert any("volatility sizing" in n for n in notes)
+
+
+def test_news_blackout_blocks_signals_only_where_calendar_exists():
+    from app.integrations.news.filter import NewsBlackout
+    from app.integrations.news.forexfactory import EconomicEvent
+    spec = dict(SPEC, category="forex", currency_base="EUR", currency_profit="USD")
+    ohlc = [FLAT, FLAT, FLAT, FLAT]
+    decision = T0 + timedelta(hours=1)  # close of bar 0
+    event = EconomicEvent("forexfactory", decision + timedelta(minutes=10), "USD", "CPI", "high")
+    news = NewsBlackout([event], 30, 30)
+
+    def run_news(weeks):
+        df = bars(ohlc)
+        s = Scripted({0: ("buy", 1.0950, 1.1100)})
+        s.prepare(df, None, 60, None)
+        return BacktestEngine(s, spec, BacktestConfig(), 60).run(df, news=news, news_weeks=weeks)
+
+    blocked = run_news({decision.isocalendar()[:2]})
+    assert blocked.trades == [] and blocked.rejections[0].reason == "news blackout"
+    unknown = run_news(set())  # no calendar stored for that week: not applied, and said so
+    assert len(unknown.trades) == 1 and any("news blackout not applied" in n for n in unknown.notes)

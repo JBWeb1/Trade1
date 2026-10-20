@@ -18,7 +18,11 @@ historical data → backtesting → out-of-sample validation → (later) demo-on
 | Historical bars for M1 / M15 / H1 / H4: chunked download, quality checks, forming bar dropped, idempotent storage, per-run audit record | ✅ |
 | Backtest engine: bar-based, spread/commission/slippage/swap, gaps, conservative intrabar rule, volume and margin checks, risk lockouts | ✅ |
 | Multi-timeframe alignment without look-ahead (tested) | ✅ |
-| Strategies (hypotheses to test, not proven): `trend_continuation`, `range_breakout`, `liquidity_sweep` | ✅ |
+| Strategies (hypotheses to test, not proven): `trend_continuation`, `range_breakout`, `liquidity_sweep`, `trend_pullback`, `session_open_breakout` (London / New York, DST-aware), `asian_range_breakout` | ✅ |
+| Honest-results tools: Monte Carlo, cost stress test, tick-data check of exits, multi-market test | ✅ |
+| Portfolio backtest with combined limits and a currency-correlation limit | ✅ |
+| Volatility-based sizing and news blackout in backtests (optional) | ✅ |
+| Trade journal export (CSV / JSON), audit log and settings view, backups, Windows auto-start | ✅ |
 | Market-regime filter (trending / ranging / high volatility) and per-regime results | ✅ |
 | Validation: development / validation / untouched out-of-sample split, walk-forward, parameter sensitivity, sample-size rules, PASSED / FAILED / INCONCLUSIVE | ✅ |
 | Metrics, stored runs and trades, reproducible strategy versions | ✅ |
@@ -148,6 +152,10 @@ Interactive docs: http://127.0.0.1:8000/docs
 | POST | `/api/backtests` | Run a backtest on stored data |
 | GET | `/api/backtests`, `/api/backtests/{id}`, `/{id}/metrics`, `/{id}/trades` | Results, equity curve, trades |
 | POST | `/api/validation/{backtest_id}` | Validate a backtest's strategy, symbol, range and costs |
+| POST | `/api/research/multi-market`, `/api/research/portfolio`, `/api/research/tick-check/{backtest_id}` | Research studies |
+| GET | `/api/research`, `/api/research/{id}` | Study results |
+| GET | `/api/backtests/{id}/journal?format=csv\|json` | Trade journal export |
+| GET | `/api/audit`, `/api/settings` | Audit log; effective settings (secrets shown only as set / not set) |
 | GET | `/api/validation`, `/api/validation/{id}` | Validation reports and verdicts |
 
 ## Dashboard
@@ -205,6 +213,28 @@ fragile strategy). INCONCLUSIVE if only sample-size or protocol checks fail. PAS
 passes. Even PASSED only means "survived these tests on this data". The next step is 2–3 months of
 forward testing on demo, compared against the backtest. **Expect most strategies to fail.** That is the
 system stopping you from losing money.
+
+## Research tools
+
+| Tool | Command | What it tells you |
+|---|---|---|
+| Monte Carlo | in every backtest and validation report | Reshuffles the trades 2,000 times: the drawdown and losing streak to plan for (95th percentile), not the one history produced. Validation fails if the 95th-percentile drawdown exceeds 25% |
+| Cost stress | in every validation report | Re-runs development+validation with spread ×2 plus slippage equal to the median spread. Validation fails if the edge disappears |
+| Multi-market | `python -m app.cli multi-market --symbols XAUUSDm,EURUSDm,GBPUSDm --timeframe H1 --htf H4 --start ... --end ... --strategy ...` | Same parameters on every symbol. CONSISTENT only if at least two thirds are positive after costs |
+| Tick check | `python -m app.cli tick-check --backtest-id N` (MT5 must be running) | Re-plays each stop/target exit against MT5 tick data where available. Reports trades the bar model got wrong |
+| Portfolio | `python -m app.cli portfolio --legs legs.json --start ... --end ...` | Legs on one account with max open positions, total open risk, daily loss, drawdown lockout and the **currency-correlation limit** (gold long + EURUSD long = two short-USD bets) |
+
+All of these are also on the dashboard's **Research studies** page. Backtests accept
+`volatility_sizing` (positions shrink when ATR is above its median) and `news_blackout`
+(only applied in weeks with stored calendar data; the report says how many signals were not covered).
+
+## Running it every day
+
+* `scripts\install_autostart.bat` registers three tasks for your Windows user: the dashboard at logon,
+  a database backup at 23:30 (to `backups\`, keeping 14), and a news-calendar fetch at 06:05.
+  `uninstall_autostart.bat` removes them. Set MT5 to start with Windows too.
+* Manual backup: `python -m app.cli backup`.
+* Trade journal: on a backtest page, **Export journal (CSV)**, or `GET /api/backtests/{id}/journal?format=csv|json`.
 
 ## Optional: Forex Factory economic calendar
 

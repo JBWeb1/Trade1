@@ -17,9 +17,13 @@ const SECTIONS: { title: string; items: { href: string; label: string }[] }[] = 
     { href: "/strategies", label: "Strategies" },
     { href: "/backtests", label: "Backtests" },
     { href: "/validation", label: "Validation" },
+    { href: "/research", label: "Research studies" },
   ] },
   { title: "Execution", items: [
     { href: "/demo", label: "Demo automation" },
+  ] },
+  { title: "System", items: [
+    { href: "/settings", label: "Settings & audit" },
   ] },
 ];
 
