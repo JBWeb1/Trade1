@@ -23,17 +23,44 @@ if (-not (Get-Process terminal64 -ErrorAction SilentlyContinue)) {
 $symbol = Read-Host "Symbol (exact MT5 name, e.g. EURUSDm)"
 $tf = Read-Host "Timeframe: M1, M15, H1 or H4 [H1]"; if (-not $tf) { $tf = "H1" }
 $tf = $tf.ToUpper()
-$balance = Read-Host "Starting virtual balance (use what you would really trade with) [10000]"; if (-not $balance) { $balance = "10000" }
-if ([double]$balance -lt 200) {
-    Write-Host "Note: with a balance this small most trades are rejected because the broker's minimum lot" -ForegroundColor Yellow
-    Write-Host "already risks more than allowed. The report will show this under 'Rejected signals'." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "What do you want to test?" -ForegroundColor Cyan
+Write-Host "  1 = Does the strategy work at all?   (virtual 100,000 balance, 0.25% risk - every signal can be taken)"
+Write-Host "  2 = What could MY account trade?    (your current MT5 demo balance, 1% risk)"
+Write-Host "  3 = Enter balance and risk myself"
+$mode = Read-Host "Choose 1, 2 or 3 [1]"; if (-not $mode) { $mode = "1" }
+switch ($mode) {
+    "2" {
+        Push-Location $Backend
+        $acct = & $Py -c "from app.config import get_settings; from app.mt5.gateway import MT5Gateway; print(MT5Gateway(get_settings()).get_account_info()['balance'])" 2>$null
+        Pop-Location
+        $balance = "$($acct | Select-Object -Last 1)".Trim()
+        if (-not ($balance -as [double])) {
+            Write-Host "Could not read the MT5 balance. Using 1000." -ForegroundColor Yellow
+            $balance = "1000"
+        }
+        $risk = "1"
+    }
+    "3" {
+        $balance = Read-Host "Starting balance in dollars, e.g. 1000 (NOT a lot size)"
+        $risk = Read-Host "Risk per trade in PERCENT of balance, e.g. 1 means 1% (NOT a lot size) [1]"; if (-not $risk) { $risk = "1" }
+    }
+    default { $balance = "100000"; $risk = "0.25" }
 }
-$commission = Read-Host "Commission per lot per side in account currency (0 for Exness Standard) [0]"; if (-not $commission) { $commission = "0" }
-$risk = Read-Host "Risk per trade, % of balance (0.25 = cautious, 1 = the usual maximum) [0.25]"; if (-not $risk) { $risk = "0.25" }
+if (-not ($balance -as [double]) -or [double]$balance -le 0) { Write-Host "Balance must be a number like 1000." -ForegroundColor Red; Read-Host "Press Enter"; exit 1 }
+if (-not ($risk -as [double]) -or [double]$risk -lt 0.1) {
+    Write-Host "Risk is a percentage of the balance (e.g. 1 = 1%), not a lot size. Trade1 picks the lot size itself. Using 1." -ForegroundColor Yellow
+    $risk = "1"
+}
 if ([double]$risk -gt 2) {
     Write-Host "Risk above 2% per trade is not allowed here. Using 2." -ForegroundColor Yellow
     $risk = "2"
 }
+if ([double]$balance -lt 500) {
+    Write-Host "Note: with a balance under 500, most signals are skipped because even the broker's smallest" -ForegroundColor Yellow
+    Write-Host "lot risks more than allowed. The report explains how much would be needed." -ForegroundColor Yellow
+}
+$commission = Read-Host "Commission per lot per side (0 for Exness Standard - just press Enter) [0]"; if (-not $commission) { $commission = "0" }
 Write-Host "`nSettings: symbol $symbol, timeframe $tf, balance $balance, risk $risk% per trade, commission $commission per lot per side"
 
 $end = (Get-Date).ToUniversalTime().AddDays(1).ToString("yyyy-MM-dd")  # tomorrow: include today's bars (capped at now)
