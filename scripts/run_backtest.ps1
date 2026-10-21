@@ -46,6 +46,7 @@ switch ($tf) {
 }
 
 Start-Transcript -Path $Report -Force | Out-Null
+Write-Host "Settings: symbol $symbol, timeframe $tf, balance $balance, risk $risk% per trade, commission $commission per lot per side"
 Push-Location $Backend
 try {
     Write-Host "`n===== Demo verification =====" -ForegroundColor Cyan
